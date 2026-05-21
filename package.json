@@ -1,0 +1,45 @@
+{
+  "name": "@nexusm/mcp-server",
+  "version": "0.0.1",
+  "description": "Nexusm MCP Server — generic MCP server exposing Nexusm core capabilities to MCP clients via stdio + Streamable HTTP transports.",
+  "type": "module",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "bin": {
+    "nexusm-mcp-server": "./dist/index.js"
+  },
+  "files": [
+    "dist/**",
+    "README.md",
+    "RUNBOOK.md",
+    "LICENSE"
+  ],
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://forgejo.10cg.pub/10CG/nexusm-mcp-server"
+  },
+  "scripts": {
+    "build": "tsc",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "test:integration": "vitest run --config vitest.integration.config.ts",
+    "lint": "eslint src/ tests/ && prettier --check src/ tests/"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.29.0",
+    "@nexusm/sdk": "1.3.0"
+  },
+  "devDependencies": {
+    "@types/node": "^20.0.0",
+    "typescript": "^5.4.0",
+    "vitest": "^1.6.0",
+    "eslint": "^9.0.0",
+    "@typescript-eslint/parser": "^7.0.0",
+    "@typescript-eslint/eslint-plugin": "^7.0.0",
+    "prettier": "^3.2.0"
+  }
+}
