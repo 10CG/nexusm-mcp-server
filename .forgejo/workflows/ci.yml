@@ -1,0 +1,72 @@
+# Nexusm MCP Server — CI (Wave 1 skeleton)
+#
+# Scope (per US-037 TASK-008): lint + type-check + build only.
+# Wave 2 (TASK-014) expands to a multi-Node matrix + integration tests.
+# Wave 4 (TASK-026) adds npm publish on tag push.
+#
+# KNOWN RED STATE (Wave 1 → Wave 3):
+#   `npm ci` / `npm install` will fail with E404 for @nexusm/sdk@1.3.0 until
+#   TASK-005 (Wave 4 carry-over) publishes the SDK to the npm registry. The
+#   workflow file itself is the Wave 1 deliverable; green CI is a Wave 4
+#   milestone. Do NOT try to "fix" the red CI here by stubbing the dep, adding
+#   a local file: link, or skipping install — those workarounds would mask the
+#   real Wave 4 publish gate.
+#
+# Forgejo Actions notes:
+#   - Secret syntax (${{ secrets.NPM_TOKEN }}) matches GitHub Actions; Forgejo
+#     is API-compatible.
+#   - NPM_TOKEN is configured on the 10CG/nexusm-mcp-server repo (Wave 0
+#     closed 2026-05-21). The token is currently only needed to read private
+#     scoped packages once @nexusm/sdk is published; npmjs public reads work
+#     without it, but writing the .npmrc unconditionally keeps the workflow
+#     ready for Wave 4 publish without further edits.
+#   - No `paths:` filter: this submodule is small and every change should be
+#     CI-gated. (The parent Nexus repo's deploy.yaml uses a paths filter for a
+#     different reason — large monorepo, expensive deploy pipeline.)
+
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  lint-and-build:
+    name: Lint + type check + build
+    runs-on: ubuntu-latest
+    container:
+      image: node:20-bookworm
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Configure npm registry auth
+        # Writes NPM_TOKEN into ~/.npmrc so `npm ci` can read private packages
+        # once @nexusm/sdk is published (Wave 4). Harmless when the token is
+        # unused (public-only installs).
+        env:
+          NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: |
+          if [ -n "$NPM_TOKEN" ]; then
+            echo "//registry.npmjs.org/:_authToken=${NPM_TOKEN}" > ~/.npmrc
+          else
+            echo "::warning::NPM_TOKEN secret not set on this repo — install will be unauthenticated"
+          fi
+
+      - name: Install dependencies
+        # KNOWN LIMITATION (Wave 1 → Wave 3): @nexusm/sdk@1.3.0 is not yet
+        # published to the npm registry. TASK-005 carry-over publishes it in
+        # Wave 4 (see openspec/changes/us-037-mcp-server-exposure/). Expect
+        # E404 on this step until then; the workflow stays RED through Wave 3
+        # by design. Fallback to `npm install` keeps the step usable for local
+        # devs running the workflow under act without a package-lock.json.
+        run: npm ci || npm install
+
+      - name: Lint
+        run: npm run lint
+
+      - name: Type check + build
+        run: npm run build
