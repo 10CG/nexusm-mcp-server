@@ -1,16 +1,84 @@
 /**
- * Tool: nexus.memory_search
+ * Tool: nexus.memory_search (US-037 TASK-010, Wave 2).
  *
- * Targeted semantic search over memories.
- * Schema locked in proposal §"R2 工具 Schema 锁定" Tool 2.
+ * Targeted memory search over the Nexus REST API via `@nexusm/sdk`.
  *
- * Wave 1 (TASK-003): scaffold only — handler returns NOT_IMPLEMENTED.
- * Wave 1+ (TASK-008): wire to `nexus-sdk-js` MemoryService.search().
+ * Schema is locked in proposal §"R2 工具 Schema 锁定" Tool 2 (+ R2.1) and
+ * MUST be preserved verbatim — the parity check
+ * `tests/unit/schema_sync.test.ts` will fail loudly if drift is introduced.
+ *
+ * Design decisions resolved during implementation:
+ *
+ *   - `mode` defaults to `'hybrid'` per proposal §M-11 / §A2-D-1
+ *     (no pure-keyword mode in Phase 1; hybrid handles CJK via the
+ *     backend's trigram `word_similarity` fallback documented in
+ *     `repositories/__init__.py::search_by_trigram`).
+ *
+ *   - Enum violations on `mode` are surfaced as a JSON-RPC
+ *     `InvalidParams` protocol error (proposal §M-3 mapping table:
+ *     422 → InvalidParams). The MCP core dispatcher in `src/index.ts`
+ *     does NOT validate input against the declared inputSchema — that
+ *     responsibility lives in this handler.
+ *
+ *   - `score_threshold` is forwarded to the SDK body verbatim. The
+ *     backend `/memories/search` endpoint accepts it under that exact
+ *     name (the SDK's older `threshold` field is a historical alias
+ *     that the backend also accepts; the locked MCP schema uses the
+ *     new name, so we forward the new name).
+ *
+ *   - `NexusClient` is lazily constructed on first handler invocation
+ *     from `loadAuthConfig()` and cached for subsequent calls. This
+ *     keeps construction cost off the `tools/list` hot path and lets
+ *     tests inject a mock via `vi.mock('@nexusm/sdk', ...)` before the
+ *     first call.
  */
 
-import { notImplementedResult, type ToolDefinition } from './types.js';
+import { NexusClient } from '@nexusm/sdk';
+import { loadAuthConfig } from '../auth.js';
+import { McpErrorCode, NexusError } from '../errors.js';
+import { type ToolDefinition } from './types.js';
 
 const NAME = 'nexus.memory_search';
+
+const ALLOWED_MODES = ['semantic', 'hybrid'] as const;
+type SearchMode = (typeof ALLOWED_MODES)[number];
+const DEFAULT_MODE: SearchMode = 'hybrid';
+
+/** Lazily-instantiated SDK client. Reset by `__resetClientForTesting`. */
+let clientSingleton: NexusClient | null = null;
+
+function getClient(): NexusClient {
+  if (clientSingleton === null) {
+    const auth = loadAuthConfig();
+    clientSingleton = new NexusClient({
+      apiKey: auth.apiToken,
+      baseUrl: auth.apiUrl,
+      tenantId: auth.tenantId,
+    });
+  }
+  return clientSingleton;
+}
+
+/**
+ * Test-only seam: reset the cached client so a `vi.mock` of `@nexusm/sdk`
+ * applied between tests can re-construct against the fresh mock.
+ *
+ * @internal
+ */
+export function __resetClientForTesting(): void {
+  clientSingleton = null;
+}
+
+/** Body forwarded to the SDK. Extends `MemorySearch` with proposal-locked
+ *  fields (`mode`, `score_threshold`) that the current SDK type predates. */
+interface MemorySearchBody {
+  user_id: string;
+  query: string;
+  mode: SearchMode;
+  limit?: number;
+  score_threshold?: number;
+  memory_type?: 'episodic' | 'semantic' | 'procedural';
+}
 
 export const memorySearchTool: ToolDefinition = {
   name: NAME,
@@ -46,5 +114,56 @@ export const memorySearchTool: ToolDefinition = {
     },
     required: ['memories', 'total'],
   },
-  handler: async (_args) => notImplementedResult(NAME),
+  handler: async (args) => {
+    // Required field shape: rely on MCP `required` declaration + SDK Zod
+    // for deep validation; here we only enforce the enum constraints that
+    // the dispatcher does not check.
+    const rawMode = args.mode;
+    let mode: SearchMode;
+    if (rawMode === undefined) {
+      mode = DEFAULT_MODE;
+    } else if (
+      typeof rawMode === 'string' &&
+      (ALLOWED_MODES as readonly string[]).includes(rawMode)
+    ) {
+      mode = rawMode as SearchMode;
+    } else {
+      throw new NexusError(
+        `Invalid mode "${String(rawMode)}". Allowed: ${ALLOWED_MODES.join(', ')}.`,
+        McpErrorCode.InvalidParams,
+        422,
+      );
+    }
+
+    const body: MemorySearchBody = {
+      user_id: String(args.user_id),
+      query: String(args.query),
+      mode,
+    };
+    if (args.limit !== undefined) body.limit = args.limit as number;
+    if (args.score_threshold !== undefined) body.score_threshold = args.score_threshold as number;
+    if (args.memory_type !== undefined && args.memory_type !== null) {
+      body.memory_type = args.memory_type as 'episodic' | 'semantic' | 'procedural';
+    }
+
+    const client = getClient();
+    // Cast: SDK's `MemorySearch` type predates the `mode`/`score_threshold`
+    // additions locked in proposal R2; the SDK Zod schema is permissive
+    // (no `.strict()`) so the extra fields pass through to the HTTP body.
+    const result = await client.memories.search(body as unknown as Parameters<typeof client.memories.search>[0]);
+
+    const memories = result.results ?? [];
+    return {
+      content: [
+        {
+          type: 'text',
+          text: JSON.stringify({ memories, total: memories.length }),
+        },
+      ],
+      structuredContent: {
+        memories,
+        total: memories.length,
+      },
+    };
+  },
 };
