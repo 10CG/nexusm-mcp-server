@@ -212,3 +212,78 @@ describe('memory_feedback — user_id privacy (R2.1 D-1 backend contract)', () =
     expect(bodyArg.rating).toBe(5);
   });
 });
+
+// ---------------------------------------------------------------------------
+// SDK-error mapping — post-Wave-2B catch wrap (TASK-012 M-3 amendment)
+//
+// commit 45cc294 added a try/catch around the client.feedback.submit() call
+// in memory_feedback.ts (lines 286-296). The two cases below verify that the
+// catch block correctly maps:
+//   - axios-like HTTP error  → NexusError with the matching McpErrorCode
+//   - axios-like network error (no response) → NexusError InternalError + network=true
+//
+// The qa-engineer audit (pre_merge R1 I-2) flagged the absence of these cases.
+// ---------------------------------------------------------------------------
+
+describe('memory_feedback — SDK error mapping (post-2B catch wrap)', () => {
+  it('maps SDK 401 to NexusError(Unauthorized) via post-2B catch wrap', async () => {
+    const axiosLike401 = {
+      isAxiosError: true,
+      response: {
+        status: 401,
+        data: { detail: 'invalid token' },
+        headers: {} as Record<string, string>,
+      },
+      message: 'Request failed 401',
+    };
+    submitSpy.mockRejectedValueOnce(axiosLike401);
+
+    let caught: unknown;
+    try {
+      await memoryFeedbackTool.handler({
+        user_id: VALID_USER_ID,
+        retrieve_id: VALID_RETRIEVE_ID,
+        rating: 5,
+      });
+    } catch (err) {
+      caught = err;
+    }
+
+    expect(caught).toBeInstanceOf(NexusError);
+    const nexusErr = caught as NexusError;
+    expect(nexusErr.mcpErrorCode).toBe(McpErrorCode.Unauthorized);
+    expect(nexusErr.httpStatus).toBe(401);
+    expect(nexusErr.retryable).toBe(false);
+  });
+
+  it('maps SDK network error (ECONNREFUSED, no response) to NexusError(InternalError, network=true)', async () => {
+    // axios-like error with isAxiosError:true but no .response (ECONNREFUSED):
+    // the catch block's non-axios branch calls mapHttpStatusToMcpError(null, null)
+    // which always returns InternalError with data.network=true.
+    const axiosLikeNetwork = {
+      isAxiosError: true,
+      message: 'connect ECONNREFUSED 127.0.0.1:8001',
+      code: 'ECONNREFUSED',
+    };
+    submitSpy.mockRejectedValueOnce(axiosLikeNetwork);
+
+    let caught: unknown;
+    try {
+      await memoryFeedbackTool.handler({
+        user_id: VALID_USER_ID,
+        retrieve_id: VALID_RETRIEVE_ID,
+        rating: 5,
+      });
+    } catch (err) {
+      caught = err;
+    }
+
+    expect(caught).toBeInstanceOf(NexusError);
+    const nexusErr = caught as NexusError;
+    // Network error: null httpStatus → InternalError (-32603)
+    expect(nexusErr.mcpErrorCode).toBe(McpErrorCode.InternalError);
+    expect(nexusErr.httpStatus).toBeNull();
+    expect(nexusErr.data?.['network']).toBe(true);
+    expect(nexusErr.retryable).toBe(true);
+  });
+});

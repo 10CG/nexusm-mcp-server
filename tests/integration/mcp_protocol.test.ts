@@ -22,10 +22,10 @@
  *        NEXUS_TEST_API_URL  — Nexus HTTP API base URL (reachable from CI)
  *        NEXUS_TEST_API_TOKEN — Bearer token for Nexus API (secret)
  *        NEXUS_TEST_TENANT_ID — Tenant identifier
- *      Absence of NEXUS_TEST_API_URL is used as the skip trigger (see
- *      `describe.skipIf` below). The other two are required when the URL
- *      is set; missing them will cause the spawned server to exit(1) with
- *      a "Required environment variables are missing" message.
+ *      All three are required for the suite to run; E2E_ENABLED is true only
+ *      when all three are non-empty (see `describe.skipIf` below). Setting
+ *      only NEXUS_TEST_API_URL while omitting TOKEN or TENANT_ID causes the
+ *      suite to skip cleanly rather than fail with cryptic placeholder errors.
  *
  * CROSS-PLATFORM NOTE (proposal §R2.1 + §A2-D-2):
  *   Phase 1 matrix: ubuntu-latest × Node 18, ubuntu-latest × Node 20,
@@ -72,8 +72,12 @@ const REPO_ROOT = resolve(__dirname, '..', '..');
 const SERVER_BINARY = resolve(REPO_ROOT, 'dist', 'index.js');
 
 const NEXUS_TEST_API_URL = process.env['NEXUS_TEST_API_URL'] ?? '';
-const NEXUS_TEST_API_TOKEN = process.env['NEXUS_TEST_API_TOKEN'] ?? 'test-token-placeholder';
-const NEXUS_TEST_TENANT_ID = process.env['NEXUS_TEST_TENANT_ID'] ?? 'test-tenant';
+// No placeholder fallbacks: in E2E mode ALL three must be real secrets.
+// If only NEXUS_TEST_API_URL is set but the others are absent, E2E_ENABLED
+// stays false and the suite skips rather than silently running with stale
+// placeholder credentials that would cause misleading failures.
+const NEXUS_TEST_API_TOKEN = process.env['NEXUS_TEST_API_TOKEN'] ?? '';
+const NEXUS_TEST_TENANT_ID = process.env['NEXUS_TEST_TENANT_ID'] ?? '';
 
 /** Fallback UUID used when a real retrieve_id is unavailable. */
 const PLACEHOLDER_UUID = '00000000-0000-0000-0000-000000000099';
@@ -98,7 +102,14 @@ const pkg = require('../../package.json') as { version: string; name: string };
 // staging pipeline), all tests execute and gate the pipeline red/green.
 // ---------------------------------------------------------------------------
 
-const E2E_ENABLED = NEXUS_TEST_API_URL.length > 0;
+// Require all three env vars to avoid silent partial-config confusion in CI:
+// a URL alone is useless if the token or tenant ID is missing, and a run
+// that uses placeholder credentials will fail in cryptic ways rather than
+// cleanly skipping.
+const E2E_ENABLED =
+  NEXUS_TEST_API_URL.length > 0 &&
+  NEXUS_TEST_API_TOKEN.length > 0 &&
+  NEXUS_TEST_TENANT_ID.length > 0;
 
 // ---------------------------------------------------------------------------
 // Subprocess lifecycle helpers
@@ -580,8 +591,8 @@ describe('E2E gate: environment variable requirements', () => {
     // know exactly which secrets to wire in order to activate the suite.
     if (!E2E_ENABLED) {
       console.info(
-        '[TASK-017] E2E suite skipped: NEXUS_TEST_API_URL is not set.\n' +
-          'To enable:\n' +
+        '[TASK-017] E2E suite skipped: one or more required env vars are absent.\n' +
+          'All three must be set (non-empty) to activate the suite:\n' +
           '  NEXUS_TEST_API_URL=http://your-nexus-host:8001\n' +
           '  NEXUS_TEST_API_TOKEN=<bearer-token>\n' +
           '  NEXUS_TEST_TENANT_ID=<tenant-id>\n' +

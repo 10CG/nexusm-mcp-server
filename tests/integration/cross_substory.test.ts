@@ -3,6 +3,11 @@
  * + errors taxonomy (TASK-013).
  *
  * TASK-018 — Wave 2B final integration gate.
+ * Updated post-Wave-2B gap fix (commit 45cc294): memory_search.ts and
+ * memory_create.ts now have internal try/catch blocks that call
+ * mapHttpStatusToMcpError and re-throw as NexusError. Cases 2 + 3 are
+ * updated to reflect this: the handler itself throws NexusError; no raw
+ * axios-like object propagates to the caller any longer.
  *
  * This suite is unit-grade in that it uses vi.mock to replace @nexusm/sdk
  * (zero live network, zero live Nexus API), but lives in tests/integration/
@@ -22,33 +27,35 @@
  *     Expected: NexusError, mcpErrorCode=Unauthorized (-32011), httpStatus=401
  *
  *   Case 2 — Network failure (ECONNREFUSED — Nexus API unreachable)
- *     Handler : nexus.memory_search (variety per TASK-018 brief)
+ *     Handler : nexus.memory_search
  *     Trigger : SDK throws axios-like { isAxiosError:true, code:'ECONNREFUSED' }
- *               with no response object; propagates raw from the handler.
- *     Expected: NexusError (via mapHttpStatusToMcpError), mcpErrorCode=InternalError,
- *               httpStatus=null, data.network=true
+ *               with no response object.
+ *     Expected: NexusError thrown directly by handler's catch block
+ *               (mapHttpStatusToMcpError(null, null) → InternalError,
+ *               httpStatus=null, data.network=true). The error is already a
+ *               NexusError when it reaches the caller; isAxiosLikeError
+ *               returns false on it.
  *
  *   Case 3 — Rate limit with Retry-After header
  *     Handler : nexus.memory_create
  *     Trigger : SDK throws axios-like { response: { status: 429,
  *               headers: { 'retry-after': '60' } } }
- *     Expected: NexusError (via mapHttpStatusToMcpError), mcpErrorCode=RateLimited (-32012),
- *               httpStatus=429, data.retry_after_seconds=60
+ *     Expected: NexusError thrown directly by handler's catch block
+ *               (mapHttpStatusToMcpError(429, body, headers) → RateLimited,
+ *               httpStatus=429, data.retry_after_seconds=60).
  *
- * Architecture note on error propagation:
- *   context.ts has a full try/catch that calls mapHttpStatusToMcpError and
- *   re-throws as NexusError — Case 1 tests the fully integrated chain
- *   inside the handler.
+ * Architecture note on error propagation (post-45cc294):
+ *   All three handlers (context.ts, memory_search.ts, memory_create.ts) now
+ *   contain their own try/catch → mapHttpStatusToMcpError → throw NexusError
+ *   chain. The distinction between Cases 1, 2, and 3 is therefore which tool
+ *   handler is exercised and which error shape the SDK throws, not whether
+ *   the error propagates raw.
  *
- *   memory_search.ts and memory_create.ts do NOT have catch blocks for
- *   SDK-level errors; axios-like errors propagate raw to the MCP dispatcher.
- *   Cases 2 and 3 test the cross-module integration at the boundary between
- *   the tool handler and errors.ts:
- *     a) The thrown object is confirmed to be an axios-like error
- *        (isAxiosLikeError guard — the shape errors.ts requires).
- *     b) mapHttpStatusToMcpError is called to confirm the resulting
- *        NexusError has the correct properties (what the transport layer
- *        would do with the propagated error).
+ *   For Case 2's plain-Error sub-case: a non-axios plain Error also hits the
+ *   catch block's else branch (mapHttpStatusToMcpError(null, null)), producing
+ *   the same NexusError(InternalError, network=true) shape. The two sub-cases
+ *   are now indistinguishable at the NexusError level — both produce
+ *   InternalError + data.network=true — because the handler normalizes them.
  *
  * Mock discipline:
  *   - vi.mock('@nexusm/sdk') replaces NexusClient entirely; spies are
@@ -277,17 +284,24 @@ describe('Cross-substory Case 1: auth failure (401) through context_retrieve + e
 
 describe('Cross-substory Case 2: network failure (ECONNREFUSED) through memory_search + errors.ts', () => {
   /**
-   * Chain exercised:
+   * Chain exercised (post-45cc294):
    *   memory_search.ts handler calls client.memories.search()
    *   → SDK throws axios-like { isAxiosError:true, code:'ECONNREFUSED',
    *                              request:{}, no response }
-   *   → memory_search.ts has NO catch block: raw error propagates to caller
-   *   → isAxiosLikeError(caughtRaw) === true confirms shape errors.ts expects
-   *   → mapHttpStatusToMcpError(null, null) produces NexusError(InternalError,
+   *   → memory_search.ts catch block: isAxiosLikeError → true,
+   *     status = err.response?.status ?? null → null
+   *   → mapHttpStatusToMcpError(null, null) → NexusError(InternalError,
    *     httpStatus=null, data.network=true, retryable=true)
+   *   → handler re-throws NexusError directly (not the raw axios object)
    *
-   * This test exercises the cross-substory integration:
-   *   memory_search (US-037a tool) throws → errors.ts (TASK-013) maps it.
+   * The caller receives a NexusError; isAxiosLikeError(caughtRaw) is false
+   * (NexusError has no isAxiosError property).
+   *
+   * For the plain-Error sub-case: a plain Error also enters the catch block's
+   * else branch (isAxiosLikeError → false), which calls
+   * mapHttpStatusToMcpError(null, null) and throws NexusError(InternalError,
+   * network=true) — identical shape to the axios-like network-error case.
+   * The handler normalizes both into the same NexusError form.
    */
 
   beforeEach(() => {
@@ -299,7 +313,7 @@ describe('Cross-substory Case 2: network failure (ECONNREFUSED) through memory_s
     resetSearchClient();
   });
 
-  it('ECONNREFUSED → raw axios-like error, maps to NexusError InternalError(network=true)', async () => {
+  it('ECONNREFUSED → handler catch maps to NexusError(InternalError, network=true)', async () => {
     const axiosLikeEconnrefused = {
       isAxiosError: true as const,
       message: 'connect ECONNREFUSED 127.0.0.1:8001',
@@ -310,8 +324,7 @@ describe('Cross-substory Case 2: network failure (ECONNREFUSED) through memory_s
 
     memoriesSearchSpy.mockRejectedValue(axiosLikeEconnrefused);
 
-    // Step 1: handler call — memory_search has no catch block, so the raw
-    // axios-like error propagates to us unchanged.
+    // Handler has a catch block (post-45cc294): throws NexusError directly.
     const caughtRaw = await catchError(() =>
       memorySearchTool.handler({
         user_id: 'user-network-test-001',
@@ -319,21 +332,15 @@ describe('Cross-substory Case 2: network failure (ECONNREFUSED) through memory_s
       }),
     );
 
-    // Step 2 (cross-substory boundary): the propagated error must be
-    // recognisable to errors.ts isAxiosLikeError — this is the shape gate.
-    expect(isAxiosLikeError(caughtRaw)).toBe(true);
+    // The handler now throws NexusError — not the raw axios-like object.
+    expect(caughtRaw).toBeInstanceOf(NexusError);
 
-    // Step 3 (errors.ts mapping): call mapHttpStatusToMcpError as the MCP
-    // transport / dispatcher would with the propagated error.
-    // ECONNREFUSED has no response, so httpStatus=null.
-    const axiosErr = caughtRaw as { response?: { status: number } };
-    const nexusErr = mapHttpStatusToMcpError(
-      axiosErr.response?.status ?? null,
-      null,
-    );
+    // isAxiosLikeError is false: NexusError has no isAxiosError property.
+    expect(isAxiosLikeError(caughtRaw)).toBe(false);
 
-    // errors.ts §M-3: null status (no HTTP response) → InternalError.
-    expect(nexusErr).toBeInstanceOf(NexusError);
+    const nexusErr = caughtRaw as NexusError;
+
+    // errors.ts §M-3: null status (no HTTP response) → InternalError (-32603).
     expect(nexusErr.mcpErrorCode).toBe(McpErrorCode.InternalError);
     expect(nexusErr.mcpErrorCode).toBe(-32603);
     expect(nexusErr.httpStatus).toBeNull();
@@ -349,10 +356,12 @@ describe('Cross-substory Case 2: network failure (ECONNREFUSED) through memory_s
     expect(nexusErr.data!['timeout']).toBeUndefined();
   });
 
-  it('isAxiosLikeError returns false for a plain Error (non-axios propagation path)', async () => {
-    // Verify the negative case: a plain Error (SDK internal throw not
-    // wrapped by axios) does not pass isAxiosLikeError. This cross-substory
-    // guard ensures errors.ts discriminates correctly in both directions.
+  it('plain Error → handler catch also produces NexusError(InternalError, network=true)', async () => {
+    // A plain Error (e.g. SDK internal throw not wrapped by axios) enters the
+    // catch block's else branch (isAxiosLikeError → false) and also calls
+    // mapHttpStatusToMcpError(null, null), producing the same NexusError shape.
+    // Both paths are normalized — the caller cannot distinguish them at the
+    // NexusError level (by design: both signal network-layer failure).
     memoriesSearchSpy.mockRejectedValue(new Error('connection refused (plain Error)'));
 
     const caughtRaw = await catchError(() =>
@@ -362,14 +371,13 @@ describe('Cross-substory Case 2: network failure (ECONNREFUSED) through memory_s
       }),
     );
 
-    // A plain Error does NOT have isAxiosError=true.
-    expect(isAxiosLikeError(caughtRaw)).toBe(false);
-    expect(caughtRaw).toBeInstanceOf(Error);
-
-    // mapHttpStatusToMcpError(null, null) still produces a valid network error.
-    const nexusErr = mapHttpStatusToMcpError(null, null);
+    // Both axios-like network error and plain Error produce NexusError(InternalError).
+    expect(caughtRaw).toBeInstanceOf(NexusError);
+    const nexusErr = caughtRaw as NexusError;
     expect(nexusErr.mcpErrorCode).toBe(McpErrorCode.InternalError);
+    expect(nexusErr.httpStatus).toBeNull();
     expect(nexusErr.data!['network']).toBe(true);
+    expect(nexusErr.retryable).toBe(true);
   });
 });
 
@@ -379,14 +387,17 @@ describe('Cross-substory Case 2: network failure (ECONNREFUSED) through memory_s
 
 describe('Cross-substory Case 3: rate limit (429 + Retry-After) through memory_create + errors.ts', () => {
   /**
-   * Chain exercised:
+   * Chain exercised (post-45cc294):
    *   memory_create.ts handler calls client.memories.create()
    *   → SDK throws axios-like { response: { status: 429,
    *       headers: { 'retry-after': '60' }, data: { detail: '...' } } }
-   *   → memory_create.ts has NO catch block: raw error propagates to caller
-   *   → isAxiosLikeError(caughtRaw) === true confirms shape
-   *   → mapHttpStatusToMcpError(429, body, { 'retry-after': '60' }) produces
+   *   → memory_create.ts catch block: isAxiosLikeError → true,
+   *     status = 429, headers forwarded
+   *   → mapHttpStatusToMcpError(429, body, { 'retry-after': '60' }) →
    *     NexusError(RateLimited, httpStatus=429, data.retry_after_seconds=60)
+   *   → handler re-throws NexusError directly
+   *
+   * The caller receives a NexusError; isAxiosLikeError(caughtRaw) is false.
    */
 
   beforeEach(() => {
@@ -414,7 +425,7 @@ describe('Cross-substory Case 3: rate limit (429 + Retry-After) through memory_c
 
     memoriesCreateSpy.mockRejectedValue(axiosLike429);
 
-    // Step 1: handler call — memory_create has no catch block, raw 429 propagates.
+    // Handler catch block maps + re-throws as NexusError (post-45cc294).
     const caughtRaw = await catchError(() =>
       memoryCreateTool.handler({
         user_id: 'user-ratelimit-test-001',
@@ -423,28 +434,12 @@ describe('Cross-substory Case 3: rate limit (429 + Retry-After) through memory_c
       }),
     );
 
-    // Step 2 (cross-substory boundary): the propagated error must be
-    // recognisable to errors.ts.
-    expect(isAxiosLikeError(caughtRaw)).toBe(true);
+    // The handler throws NexusError — not the raw axios-like object.
+    expect(caughtRaw).toBeInstanceOf(NexusError);
 
-    // Step 3 (errors.ts mapping): mapHttpStatusToMcpError with headers so
-    // Retry-After is parsed.
-    const axiosErr = caughtRaw as {
-      response: {
-        status: number;
-        data: unknown;
-        headers: Record<string, string>;
-      };
-    };
-
-    const nexusErr = mapHttpStatusToMcpError(
-      axiosErr.response.status,
-      axiosErr.response.data,
-      axiosErr.response.headers,
-    );
+    const nexusErr = caughtRaw as NexusError;
 
     // errors.ts §M-3: 429 → RateLimited (-32012).
-    expect(nexusErr).toBeInstanceOf(NexusError);
     expect(nexusErr.mcpErrorCode).toBe(McpErrorCode.RateLimited);
     expect(nexusErr.mcpErrorCode).toBe(-32012);
     expect(nexusErr.httpStatus).toBe(429);
@@ -457,7 +452,7 @@ describe('Cross-substory Case 3: rate limit (429 + Retry-After) through memory_c
     expect(nexusErr.data!['retry_after_seconds']).toBe(60);
   });
 
-  it('429 without Retry-After header → RateLimited, retryable=true, retry_after_seconds absent', async () => {
+  it('429 without Retry-After header → NexusError RateLimited, retryable=true, retry_after_seconds absent', async () => {
     // Graceful degradation: 429 without Retry-After still maps to RateLimited;
     // client must apply its own backoff heuristic.
     const axiosLike429NoHeader = {
@@ -480,16 +475,8 @@ describe('Cross-substory Case 3: rate limit (429 + Retry-After) through memory_c
       }),
     );
 
-    expect(isAxiosLikeError(caughtRaw)).toBe(true);
-
-    const axiosErr = caughtRaw as {
-      response: { status: number; data: unknown; headers: Record<string, string> };
-    };
-    const nexusErr = mapHttpStatusToMcpError(
-      axiosErr.response.status,
-      axiosErr.response.data,
-      axiosErr.response.headers,
-    );
+    expect(caughtRaw).toBeInstanceOf(NexusError);
+    const nexusErr = caughtRaw as NexusError;
 
     expect(nexusErr.mcpErrorCode).toBe(McpErrorCode.RateLimited);
     expect(nexusErr.httpStatus).toBe(429);

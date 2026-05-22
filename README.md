@@ -8,6 +8,6 @@ Published to npm as **`@nexusm/mcp-server`**.
 
 ## Status
 
-**Wave 1 done (2026-05-21)**: MCP server scaffold + auth + errors contract + Forgejo CI workflow shipped (5 commits, ~1283 lines). Wave 2 (tool handlers wired to SDK + error mapping + integration tests) pending — see [proposal](https://forgejo.10cg.pub/10CG/nexus/src/branch/main/openspec/changes/us-037-mcp-server-exposure/proposal.md).
+**Wave 2 done (2026-05-22)**: 4 tools fully wired to `@nexusm/sdk` (context_retrieve / memory_search / memory_create / memory_feedback) + full §M-3 HTTP→MCP error mapping (`mapHttpStatusToMcpError` + 2 new error codes Unauthorized/RateLimited) + Prometheus metrics with cardinality guard + cross-substory + E2E + schema_sync integration tests. Wave 3 (nexus-claude-plugin Anthropic marketplace) pending — see [proposal](https://forgejo.10cg.pub/10CG/nexus/src/branch/main/openspec/changes/us-037-mcp-server-exposure/proposal.md).
 
-**Known Wave 1 limitations**: (1) CI red until Wave 4 because `@nexusm/sdk@1.3.0` not yet published; (2) `schema_sync.test.ts` runtime check unblocks at Wave 4 SDK publish.
+**Known Wave 2 limitations**: (1) CI red until Gate-1 — `@nexusm/sdk@1.3.0` npm publish pending (user action; SDK rename merged at `1fbdd69` in `nexus-sdk-js` main); (2) integration tests env-gated (require `NEXUS_TEST_API_URL/TOKEN/TENANT_ID` Forgejo secrets, currently dormant); (3) Python backend `mcp.py` metrics defined but emit-site wiring deferred to Wave 3 (FU-MCP-BACKEND-EMIT-WIRING); (4) HTTP transport per-request `server.connect()` is scaffold-only — Wave 3 entry condition (FU-MCP-HTTP-SESSION) before plugin TASK-019 E2E runs.
