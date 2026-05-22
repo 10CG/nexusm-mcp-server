@@ -83,6 +83,15 @@ export function validateAsOf(asOf: string | undefined, now: Date = new Date()): 
       `as_of is more than 90 days in the past (age=${Math.floor(ageMs / 86_400_000)}d, max=90d). Per US-037 R2.1 ai D-2 / A2-D-4 cap.`,
     );
   }
+  // Wave 2 mid_audit qa-engineer I-3: future as_of is semantically ill-defined
+  // (cannot retrieve memories "from the future"); reject explicitly rather
+  // than letting the SDK / backend silently accept-then-fail.
+  if (ageMs < 0) {
+    throw new McpError(
+      ErrorCode.InvalidParams,
+      `as_of is in the future (now=${now.toISOString()}, as_of=${asOf}). Cannot retrieve memories anchored to a future point in time.`,
+    );
+  }
 }
 
 // ---------------------------------------------------------------------------

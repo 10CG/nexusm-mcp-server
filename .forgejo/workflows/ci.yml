@@ -70,3 +70,11 @@ jobs:
 
       - name: Type check + build
         run: npm run build
+
+      - name: Unit tests
+        # Wave 2 mid_audit (qa-engineer C-1, 2026-05-22): add unit test step.
+        # Uses vitest.unit.config.ts to exclude `schema_sync.test.ts` (the only
+        # test that imports the real @nexusm/sdk Zod schemas at runtime — would
+        # fail until Gate-1 SDK publish). All other unit tests are vi.mock-isolated
+        # and run independently of SDK availability.
+        run: npm run test:unit

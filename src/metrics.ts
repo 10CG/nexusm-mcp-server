@@ -1,6 +1,21 @@
 /**
  * Prometheus metrics for the Nexus MCP server (US-037 Wave 2 TASK-014).
  *
+ * Layer
+ * =====
+ * This file measures the **MCP protocol dispatch layer** — every `tools/call`
+ * and `tools/list` JSON-RPC request the MCP server handles. It is NOT the
+ * same as the Python-side `src/nexus/observability/metrics/mcp.py` which
+ * measures the **backend REST attribution layer** (post-MCP-dispatch).
+ *
+ * Both metric families share the `nexus_mcp_*` prefix but observe different
+ * events at different layers, so:
+ *   - TS metric names use `nexus_mcp_tool_*` (this file)
+ *   - Python metric names use `nexus_mcp_backend_*` (the backend mirror)
+ *   - Alert rules and Grafana panels must NOT sum across both — they would
+ *     double-count a single user action
+ *   - See ADR-001 + Wave 2 mid_audit tech-lead Important #2 (2026-05-22)
+ *
  * Design notes
  * ============
  * - Spins up an **independent** HTTP listener on `NEXUS_METRICS_PORT` (default
