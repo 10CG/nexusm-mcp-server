@@ -34,6 +34,30 @@ import {
 } from '@modelcontextprotocol/sdk/types.js';
 
 import { tools, toolsByName } from './tools/index.js';
+import {
+  startMetricsServer,
+  emitToolCall,
+  emitToolDuration,
+  emitToolsList,
+} from './metrics.js';
+
+/**
+ * Extract the calling MCP client identifier from a request, with fallback.
+ *
+ * MCP `request._meta.clientInfo.name` is the standard JSON-RPC carrier when
+ * the client cooperates (Claude Code, Cursor, mcp-cli all set it). When the
+ * field is missing, fall back to env var `NEXUS_MCP_CLIENT_NAME` (set by
+ * launchers that wrap nexusm-mcp-server) and finally `unknown`. Cardinality
+ * is guarded inside `metrics.ts` via a whitelist (R2 ai D-5).
+ */
+function extractClient(request: { _meta?: { clientInfo?: { name?: unknown } } }): string {
+  const fromMeta = request._meta?.clientInfo?.name;
+  if (typeof fromMeta === 'string' && fromMeta.length > 0) {
+    return fromMeta;
+  }
+  const fromEnv = process.env.NEXUS_MCP_CLIENT_NAME;
+  return fromEnv && fromEnv.length > 0 ? fromEnv : 'unknown';
+}
 
 // Read version from package.json without `import assert` (Node 18+ compat).
 const require = createRequire(import.meta.url);
@@ -49,26 +73,44 @@ function createServer(): Server {
   );
 
   // tools/list — return the locked input/output schemas verbatim.
-  server.setRequestHandler(ListToolsRequestSchema, async () => ({
-    tools: tools.map((t) => ({
-      name: t.name,
-      description: t.description,
-      inputSchema: t.inputSchema,
-      outputSchema: t.outputSchema,
-    })),
-  }));
+  server.setRequestHandler(ListToolsRequestSchema, async (request) => {
+    emitToolsList(extractClient(request as { _meta?: { clientInfo?: { name?: unknown } } }));
+    return {
+      tools: tools.map((t) => ({
+        name: t.name,
+        description: t.description,
+        inputSchema: t.inputSchema,
+        outputSchema: t.outputSchema,
+      })),
+    };
+  });
 
   // tools/call — dispatch to handler by tool name. Unknown tool names surface
   // as protocol-level errors (per CallToolResult spec: "errors in _finding_
   // the tool ... should be reported as an MCP error response").
+  // Wraps emitToolCall + emitToolDuration around the handler so metrics fire
+  // on both success + failure (R1 mid_audit C-2 + tech-lead Important #1).
   server.setRequestHandler(CallToolRequestSchema, async (request) => {
     const name = request.params.name;
+    const client = extractClient(request as { _meta?: { clientInfo?: { name?: unknown } } });
     const tool = toolsByName.get(name);
     if (!tool) {
+      emitToolCall(name, 'unknown_tool', client);
       throw new Error(`Unknown tool: ${name}`);
     }
     const args = (request.params.arguments ?? {}) as Record<string, unknown>;
-    return tool.handler(args);
+    const startNs = process.hrtime.bigint();
+    try {
+      const result = await tool.handler(args);
+      emitToolCall(name, 'success', client);
+      return result;
+    } catch (err) {
+      emitToolCall(name, 'error', client);
+      throw err;
+    } finally {
+      const durNs = process.hrtime.bigint() - startNs;
+      emitToolDuration(name, Number(durNs) / 1e9);
+    }
   });
 
   return server;
@@ -105,6 +147,10 @@ async function startHttp(server: Server): Promise<void> {
 async function main(): Promise<void> {
   const server = createServer();
   const transportMode = (process.env.NEXUS_MCP_TRANSPORT ?? 'stdio').toLowerCase();
+
+  // Start Prometheus metrics server on separate port (TASK-014, R2 m-6).
+  // Coexists with stdio transport — different fd / no stdin/stdout contention.
+  await startMetricsServer();
 
   if (transportMode === 'http') {
     await startHttp(server);
