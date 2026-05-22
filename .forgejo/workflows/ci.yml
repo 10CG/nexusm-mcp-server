@@ -105,3 +105,93 @@ jobs:
         # fail until Gate-1 SDK publish). All other unit tests are vi.mock-isolated
         # and run independently of SDK availability.
         run: npm run test:unit
+
+  # ---------------------------------------------------------------------------
+  # Integration test matrix (Wave 2B TASK-017, 2026-05-22)
+  #
+  # Runs cross-platform MCP protocol E2E tests after lint-and-build succeeds.
+  # Matrix: ubuntu-latest × Node 18, ubuntu-latest × Node 20,
+  #         macos-latest × Node 20.  — 3 combinations total.
+  #
+  # Windows + Node 22: explicitly OOS Phase 1 (proposal §R2.1 + §A2-D-2).
+  #   Windows: child_process.spawn path separator needs adjustment (deferred).
+  #   Node 22: not yet in the supported engines range (package.json >=18);
+  #            add when Node 22 enters LTS and testing confirms no regressions.
+  #
+  # DORMANT STATE (Wave 2B → until Gate-2 staging pipeline):
+  #   The NEXUS_TEST_API_URL Forgejo Actions secret is NOT configured on this
+  #   repo. Without it the E2E suite's `describe.skipIf(!E2E_ENABLED)` guard
+  #   fires and all protocol tests are skipped. The job exits 0 (no failures).
+  #   This makes the job "scaffold + future-ready": the moment a staging Nexus
+  #   API is available and the secret is wired, the suite automatically
+  #   activates without any workflow changes.
+  #
+  # Gate-1 dependency (npm install):
+  #   Like `lint-and-build`, this job will red-CI on `npm ci` until
+  #   @nexusm/sdk@1.3.0 is published (TASK-005 carry-over). Same design
+  #   as the parent job — intentional, not a bug.
+  # ---------------------------------------------------------------------------
+
+  integration-matrix:
+    name: Integration tests (${{ matrix.os }} / Node ${{ matrix.node }})
+    needs: lint-and-build
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            node: 18
+          - os: ubuntu-latest
+            node: 20
+          - os: macos-latest
+            node: 20
+        # Explicitly OOS Phase 1 (proposal §A2-D-2):
+        #   windows-latest × any node  — spawn path separator not addressed
+        #   ubuntu-latest × node:22    — not yet in supported engines range
+
+    runs-on: ${{ matrix.os }}
+    container:
+      # Use official node images on ubuntu; macos runners have Node pre-installed.
+      # Conditional image: Forgejo Actions supports per-matrix container keys
+      # only via runner-level selection — use 'node:<ver>-bookworm' on linux,
+      # leave container unset for macos (bare runner already has node).
+      image: ${{ matrix.os == 'ubuntu-latest' && format('node:{0}-bookworm', matrix.node) || '' }}
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Node (macos only — linux uses container image)
+        if: ${{ matrix.os == 'macos-latest' }}
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+
+      - name: Configure npm registry auth
+        env:
+          NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: |
+          if [ -n "$NPM_TOKEN" ]; then
+            echo "//registry.npmjs.org/:_authToken=${NPM_TOKEN}" > ~/.npmrc
+          else
+            echo "::warning::NPM_TOKEN not set — install will be unauthenticated"
+          fi
+
+      - name: Install dependencies
+        # KNOWN LIMITATION: same Gate-1 SDK publish dependency as lint-and-build.
+        # Will fail with E404 for @nexusm/sdk@1.3.0 until TASK-005 publishes.
+        run: npm ci || npm install
+
+      - name: Build (required for E2E — spawns dist/index.js)
+        run: npm run build
+
+      - name: Integration tests
+        # NEXUS_TEST_API_URL controls whether the E2E suite actually runs.
+        # When absent (current state), describe.skipIf fires and all E2E tests
+        # skip gracefully. The job exits 0.
+        # When set (future staging pipeline), the full protocol round-trip runs.
+        env:
+          NEXUS_TEST_API_URL: ${{ secrets.NEXUS_TEST_API_URL }}
+          NEXUS_TEST_API_TOKEN: ${{ secrets.NEXUS_TEST_API_TOKEN }}
+          NEXUS_TEST_TENANT_ID: ${{ secrets.NEXUS_TEST_TENANT_ID }}
+        run: npm run test:integration
