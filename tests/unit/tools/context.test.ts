@@ -50,33 +50,11 @@ vi.mock('../../../src/auth.js', () => ({
   }),
 }));
 
-// -- McpError stub --------------------------------------------------------
-// We re-create just enough of the SDK's McpError to let the SUT throw and
-// the tests assert. The real SDK class is structurally similar.
-vi.mock('@modelcontextprotocol/sdk/types.js', () => {
-  enum ErrorCode {
-    ParseError = -32700,
-    InvalidRequest = -32600,
-    MethodNotFound = -32601,
-    InvalidParams = -32602,
-    InternalError = -32603,
-  }
-  class McpError extends Error {
-    public readonly code: number;
-    constructor(code: number, message: string) {
-      super(message);
-      this.name = 'McpError';
-      this.code = code;
-    }
-  }
-  return { McpError, ErrorCode };
-});
-
 // Late import AFTER vi.mock so the mocks bind correctly.
 const { contextRetrieveTool, validateAsOf, __setClientForTesting } = await import(
   '../../../src/tools/context.js'
 );
-const { McpError, ErrorCode } = await import('@modelcontextprotocol/sdk/types.js');
+const { NexusError, McpErrorCode } = await import('../../../src/errors.js');
 
 // -----------------------------------------------------------------------
 // Helpers
@@ -209,8 +187,8 @@ describe('nexus.context_retrieve — as_of validation', () => {
     } catch (e) {
       caught = e;
     }
-    expect(caught).toBeInstanceOf(McpError);
-    expect((caught as InstanceType<typeof McpError>).code).toBe(ErrorCode.InvalidParams);
+    expect(caught).toBeInstanceOf(NexusError);
+    expect((caught as InstanceType<typeof NexusError>).mcpErrorCode).toBe(McpErrorCode.InvalidParams);
     expect((caught as Error).message).toMatch(/90 days/);
     expect(retrieveSpy).not.toHaveBeenCalled();
   });
@@ -228,8 +206,8 @@ describe('nexus.context_retrieve — as_of validation', () => {
     } catch (e) {
       caught = e;
     }
-    expect(caught).toBeInstanceOf(McpError);
-    expect((caught as InstanceType<typeof McpError>).code).toBe(ErrorCode.InvalidParams);
+    expect(caught).toBeInstanceOf(NexusError);
+    expect((caught as InstanceType<typeof NexusError>).mcpErrorCode).toBe(McpErrorCode.InvalidParams);
     expect((caught as Error).message).toMatch(/timezone/);
     expect(retrieveSpy).not.toHaveBeenCalled();
   });
@@ -238,12 +216,12 @@ describe('nexus.context_retrieve — as_of validation', () => {
     // Sanity check — covers the helper directly without going through SDK.
     expect(() => validateAsOf(undefined)).not.toThrow();
     expect(() => validateAsOf('2026-05-01T00:00:00Z', new Date('2026-05-15T00:00:00Z'))).not.toThrow();
-    expect(() => validateAsOf('not-a-date')).toThrow(McpError);
+    expect(() => validateAsOf('not-a-date')).toThrow(NexusError);
   });
 });
 
 describe('nexus.context_retrieve — SDK failures propagate', () => {
-  it('NetworkError from SDK surfaces as MCP InternalError (case 6)', async () => {
+  it('NetworkError from SDK surfaces as NexusError InternalError (case 6)', async () => {
     class FakeNetworkError extends Error {
       constructor(msg: string) {
         super(msg);
@@ -258,8 +236,8 @@ describe('nexus.context_retrieve — SDK failures propagate', () => {
     } catch (e) {
       caught = e;
     }
-    expect(caught).toBeInstanceOf(McpError);
-    expect((caught as InstanceType<typeof McpError>).code).toBe(ErrorCode.InternalError);
+    expect(caught).toBeInstanceOf(NexusError);
+    expect((caught as InstanceType<typeof NexusError>).mcpErrorCode).toBe(McpErrorCode.InternalError);
     expect((caught as Error).message).toMatch(/ECONNREFUSED/);
   });
 });

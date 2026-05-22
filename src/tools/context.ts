@@ -22,12 +22,12 @@
  *     which reads `process.env` once.
  */
 
-import { McpError, ErrorCode } from '@modelcontextprotocol/sdk/types.js';
 import type { CallToolResult } from '@modelcontextprotocol/sdk/types.js';
 import { NexusClient } from '@nexusm/sdk';
 import type { ContextRequest, ContextRetrieveResponse } from '@nexusm/sdk';
 
 import { loadAuthConfig, type AuthConfig } from '../auth.js';
+import { NexusError, McpErrorCode, isAxiosLikeError, mapHttpStatusToMcpError } from '../errors.js';
 import type { ToolDefinition } from './types.js';
 
 const NAME = 'nexus.context_retrieve';
@@ -58,38 +58,49 @@ type BackendContextResponse = ContextRetrieveResponse & {
 };
 
 /** Validate that `as_of` (if present) is ISO 8601 *with* timezone and not
- *  more than 90 days in the past. Throws an `McpError(InvalidParams)` on
+ *  more than 90 days in the past. Throws a `NexusError(InvalidParams)` on
  *  any violation — caller must invoke this BEFORE constructing the SDK
- *  request so the SDK is never reached for invalid input. */
+ *  request so the SDK is never reached for invalid input.
+ *
+ *  Location decision (TASK-013 §"as_of cap helper"): kept in context.ts
+ *  rather than extracted to errors.ts or a shared validation.ts. Date
+ *  validation is tool-domain logic, not error taxonomy; moving it to
+ *  errors.ts would create conceptual pollution and a circular-dep risk
+ *  (errors.ts importing from tools/). A new validation.ts for a single
+ *  function is not warranted. */
 export function validateAsOf(asOf: string | undefined, now: Date = new Date()): void {
   if (asOf === undefined) return;
   if (!ISO_8601_WITH_TZ.test(asOf)) {
-    throw new McpError(
-      ErrorCode.InvalidParams,
+    throw new NexusError(
       `as_of must be ISO 8601 with timezone (e.g. "2026-01-01T00:00:00Z" or "2026-01-01T00:00:00+08:00"); got ${JSON.stringify(asOf)}`,
+      McpErrorCode.InvalidParams,
+      422,
     );
   }
   const parsed = Date.parse(asOf);
   if (Number.isNaN(parsed)) {
-    throw new McpError(
-      ErrorCode.InvalidParams,
+    throw new NexusError(
       `as_of is not a valid datetime: ${JSON.stringify(asOf)}`,
+      McpErrorCode.InvalidParams,
+      422,
     );
   }
   const ageMs = now.getTime() - parsed;
   if (ageMs > AS_OF_MAX_AGE_MS) {
-    throw new McpError(
-      ErrorCode.InvalidParams,
+    throw new NexusError(
       `as_of is more than 90 days in the past (age=${Math.floor(ageMs / 86_400_000)}d, max=90d). Per US-037 R2.1 ai D-2 / A2-D-4 cap.`,
+      McpErrorCode.InvalidParams,
+      422,
     );
   }
   // Wave 2 mid_audit qa-engineer I-3: future as_of is semantically ill-defined
   // (cannot retrieve memories "from the future"); reject explicitly rather
   // than letting the SDK / backend silently accept-then-fail.
   if (ageMs < 0) {
-    throw new McpError(
-      ErrorCode.InvalidParams,
+    throw new NexusError(
       `as_of is in the future (now=${now.toISOString()}, as_of=${asOf}). Cannot retrieve memories anchored to a future point in time.`,
+      McpErrorCode.InvalidParams,
+      422,
     );
   }
 }
@@ -169,17 +180,27 @@ async function handler(args: Record<string, unknown>): Promise<CallToolResult> {
   };
   if (asOf !== undefined) sdkRequest.as_of = asOf;
 
-  // ---- Call SDK; let NexusError / NetworkError propagate as MCP -------
+  // ---- Call SDK; translate errors to NexusError using TASK-013 mapping ---
   let resp: BackendContextResponse;
   try {
     resp = (await getClient().context.retrieve(sdkRequest)) as BackendContextResponse;
   } catch (err) {
-    // Re-throw McpError unchanged; map everything else to InternalError.
-    // Detailed Nexus REST → MCP code mapping lives in TASK-013 (errors.ts);
-    // here we just guarantee we never swallow the failure.
-    if (err instanceof McpError) throw err;
+    // Re-throw NexusError unchanged (already translated, e.g. from validateAsOf).
+    if (err instanceof NexusError) throw err;
+    // Axios-like error from the SDK: use the canonical HTTP→MCP mapping.
+    if (isAxiosLikeError(err)) {
+      throw mapHttpStatusToMcpError(
+        err.response?.status ?? null,
+        err.response?.data,
+        err.response?.headers,
+      );
+    }
+    // Unknown / plain Error: surface as InternalError.
     const msg = err instanceof Error ? err.message : String(err);
-    throw new McpError(ErrorCode.InternalError, `nexus.context_retrieve failed: ${msg}`);
+    throw new NexusError(
+      `nexus.context_retrieve failed: ${msg}`,
+      McpErrorCode.InternalError,
+    );
   }
 
   // ---- Map SDK response → MCP outputSchema shape ----------------------
