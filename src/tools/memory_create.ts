@@ -34,7 +34,7 @@
 import { NexusClient } from '@nexusm/sdk';
 
 import { loadAuthConfig } from '../auth.js';
-import { McpErrorCode, NexusError } from '../errors.js';
+import { McpErrorCode, NexusError, isAxiosLikeError, mapHttpStatusToMcpError } from '../errors.js';
 import { type ToolDefinition } from './types.js';
 
 const NAME = 'nexus.memory_create';
@@ -274,9 +274,23 @@ export const memoryCreateTool: ToolDefinition = {
     if (typeof args.agent_id === 'string') body.agent_id = args.agent_id;
 
     const client = getClient();
-    const created = (await client.memories.create(
-      body as unknown as Parameters<typeof client.memories.create>[0],
-    )) as Record<string, unknown>;
+    // Wave 2B mid_audit-to-pre_merge fix: wrap SDK call + map errors per §M-3
+    // (mirrors context.ts pattern). Without this, axios-like 401/403/429
+    // surface as JSON-RPC InternalError instead of Unauthorized/RateLimited.
+    let created: Record<string, unknown>;
+    try {
+      created = (await client.memories.create(
+        body as unknown as Parameters<typeof client.memories.create>[0],
+      )) as Record<string, unknown>;
+    } catch (err: unknown) {
+      if (isAxiosLikeError(err)) {
+        const status = err.response?.status ?? null;
+        const respBody = err.response?.data ?? null;
+        const headers = err.response?.headers as Record<string, string | string[]> | undefined;
+        throw mapHttpStatusToMcpError(status, respBody, headers);
+      }
+      throw mapHttpStatusToMcpError(null, null);
+    }
 
     // ---- conflict_resolution drift guard (proposal §ai R2 D-10) ----
     const conflict = validateConflictResolution(created.conflict_resolution);

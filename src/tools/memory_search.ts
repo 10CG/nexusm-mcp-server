@@ -35,7 +35,7 @@
 
 import { NexusClient } from '@nexusm/sdk';
 import { loadAuthConfig } from '../auth.js';
-import { McpErrorCode, NexusError } from '../errors.js';
+import { McpErrorCode, NexusError, isAxiosLikeError, mapHttpStatusToMcpError } from '../errors.js';
 import { type ToolDefinition } from './types.js';
 
 const NAME = 'nexus.memory_search';
@@ -150,7 +150,23 @@ export const memorySearchTool: ToolDefinition = {
     // Cast: SDK's `MemorySearch` type predates the `mode`/`score_threshold`
     // additions locked in proposal R2; the SDK Zod schema is permissive
     // (no `.strict()`) so the extra fields pass through to the HTTP body.
-    const result = await client.memories.search(body as unknown as Parameters<typeof client.memories.search>[0]);
+    // Wave 2B mid_audit-to-pre_merge fix: wrap SDK call in try/catch +
+    // route SDK errors through mapHttpStatusToMcpError (proposal §M-3 mapping),
+    // mirroring context.ts pattern. Without this, axios-like 401/403/429
+    // would surface as JSON-RPC InternalError (-32603) instead of the
+    // semantically-correct Unauthorized/RateLimited codes from TASK-013.
+    let result;
+    try {
+      result = await client.memories.search(body as unknown as Parameters<typeof client.memories.search>[0]);
+    } catch (err: unknown) {
+      if (isAxiosLikeError(err)) {
+        const status = err.response?.status ?? null;
+        const respBody = err.response?.data ?? null;
+        const headers = err.response?.headers as Record<string, string | string[]> | undefined;
+        throw mapHttpStatusToMcpError(status, respBody, headers);
+      }
+      throw mapHttpStatusToMcpError(null, null);
+    }
 
     const memories = result.results ?? [];
     return {

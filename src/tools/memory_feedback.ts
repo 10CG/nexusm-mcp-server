@@ -34,7 +34,7 @@ import type { CallToolResult } from '@modelcontextprotocol/sdk/types.js';
 import { NexusClient, type FeedbackSubmitRequest } from '@nexusm/sdk';
 
 import { loadAuthConfig } from '../auth.js';
-import { McpErrorCode, NexusError } from '../errors.js';
+import { McpErrorCode, NexusError, isAxiosLikeError, mapHttpStatusToMcpError } from '../errors.js';
 import type { ToolDefinition } from './types.js';
 
 const NAME = 'nexus.memory_feedback';
@@ -279,7 +279,21 @@ export const memoryFeedbackTool: ToolDefinition = {
     );
 
     const client = getClient();
-    const result = await client.feedback.submit(parsed.retrieve_id, parsed.body);
+    // Wave 2B mid_audit-to-pre_merge fix: wrap SDK call + map errors per §M-3
+    // (mirrors context.ts pattern). Without this, axios-like 401/403/429
+    // surface as JSON-RPC InternalError instead of Unauthorized/RateLimited.
+    let result;
+    try {
+      result = await client.feedback.submit(parsed.retrieve_id, parsed.body);
+    } catch (err: unknown) {
+      if (isAxiosLikeError(err)) {
+        const status = err.response?.status ?? null;
+        const respBody = err.response?.data ?? null;
+        const headers = err.response?.headers as Record<string, string | string[]> | undefined;
+        throw mapHttpStatusToMcpError(status, respBody, headers);
+      }
+      throw mapHttpStatusToMcpError(null, null);
+    }
 
     return {
       content: [{ type: 'text', text: JSON.stringify(result) }],
