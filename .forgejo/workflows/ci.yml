@@ -71,6 +71,33 @@ jobs:
       - name: Type check + build
         run: npm run build
 
+      - name: Audit-marker scan in tool descriptions
+        # Wave 2B (TASK-016, 2026-05-22): description-clean lint.
+        # Catches R-marker / C-marker / M-marker leakage in the user-visible
+        # `description:` field values of src/tools/*.ts. The R1 audit (2026-05-22)
+        # found two such leaks in context.ts that were subsequently cleaned; this
+        # step enforces zero leaks from Wave 2B forward.
+        #
+        # Regex notes:
+        #   - Anchors on `description:\s*['"]` — matches single-line description
+        #     string values only. JSDoc (`/** ... */`) does not match because it
+        #     does not contain the `description:` key prefix.
+        #   - `[^'"]*` stops at the closing quote, preventing cross-line matches.
+        #   - `\b` word-boundary guards prevent false positives on tokens like
+        #     `R2.1` embedded mid-word (R2.1 matches R\d+ at boundary since `.`
+        #     is non-word; `\b` still fires after the digit).
+        #   - Multi-line description strings (value on next line) are NOT matched;
+        #     Wave 2 coverage of single-line leaks is sufficient (R1 audit found
+        #     only single-line occurrences).
+        run: |
+          set -e
+          LEAKS=$(grep -nE "description:\s*['\"][^'\"]*\b(R[0-9]+|C-[0-9]+|m-[0-9]+|M-[0-9]+)\b" src/tools/*.ts || true)
+          if [ -n "$LEAKS" ]; then
+            echo "::error::Audit-marker leakage in tool description: fields"
+            echo "$LEAKS"
+            exit 1
+          fi
+
       - name: Unit tests
         # Wave 2 mid_audit (qa-engineer C-1, 2026-05-22): add unit test step.
         # Uses vitest.unit.config.ts to exclude `schema_sync.test.ts` (the only
