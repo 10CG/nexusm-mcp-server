@@ -34,6 +34,7 @@ import {
 } from '@modelcontextprotocol/sdk/types.js';
 
 import { tools, toolsByName } from './tools/index.js';
+import { startMetricsServer } from './metrics.js';
 
 // Read version from package.json without `import assert` (Node 18+ compat).
 const require = createRequire(import.meta.url);
@@ -105,6 +106,10 @@ async function startHttp(server: Server): Promise<void> {
 async function main(): Promise<void> {
   const server = createServer();
   const transportMode = (process.env.NEXUS_MCP_TRANSPORT ?? 'stdio').toLowerCase();
+
+  // Start Prometheus metrics server on separate port (TASK-014, R2 m-6).
+  // Coexists with stdio transport — different fd / no stdin/stdout contention.
+  await startMetricsServer();
 
   if (transportMode === 'http') {
     await startHttp(server);
