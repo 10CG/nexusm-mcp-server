@@ -1,9 +1,10 @@
 # nexusm-mcp-server RUNBOOK
 
-> **Status**: Phase B Wave 0 prep template (will be moved to `packages/nexusm-mcp-server/RUNBOOK.md` once Forgejo repo `10CG/nexusm-mcp-server` is created and wired as submodule)
+> **Status**: in place at `packages/nexusm-mcp-server/RUNBOOK.md`; moved into this submodule at Wave 0 close (2026-05-21).
 > **Owner**: 10CG Backend / DevOps
 > **Created**: 2026-05-09 (US-037 Phase B Wave 0)
-> **Related**: [proposal.md §C-5](../../openspec/changes/us-037-mcp-server-exposure/proposal.md) + [detailed-tasks.yaml TASK-002](../../openspec/changes/us-037-mcp-server-exposure/detailed-tasks.yaml)
+> **Last revised**: 2026-05-22 (Wave 1 R1 audit amendments — removed `description-clean` row from §5 until Wave 2 CI matrix expansion)
+> **Related**: [proposal.md §C-5](https://forgejo.10cg.pub/10CG/nexus/src/branch/main/openspec/changes/us-037-mcp-server-exposure/proposal.md) + [detailed-tasks.yaml TASK-002 / TASK-008](https://forgejo.10cg.pub/10CG/nexus/src/branch/main/openspec/changes/us-037-mcp-server-exposure/detailed-tasks.yaml)
 
 ---
 
@@ -171,9 +172,10 @@ If 10CG npm org access lost (admin departure / account compromise):
 | `tsc` | push, PR | TypeScript type-check | Fix type errors; SDK Zod schema drift may indicate need to bump @nexusm/sdk |
 | `test:unit` | push, PR | vitest unit tests | Local repro: `npm test` |
 | `test:integration` | push, PR | mcp-cli E2E (3 platform matrix Linux × Node 18/20 + macOS × Node 20) | Check matrix log; Aether runner Windows OOS Phase 1 |
-| `description-clean` | push, PR | grep audit annotations in `src/tools/*.ts` description fields | Strip `R[0-9]+|m-[0-9]+|C-[0-9]+|M-[0-9]+` markers from descriptions |
 | `schema_sync` | push, PR | MCP inputSchema vs @nexusm/sdk Zod schema | Update one or the other to match |
 | `publish` | tag `v*` | npm publish + Forgejo release | Per §1 failure modes |
+
+> **Wave 1 caveat (2026-05-22)**: Only `lint` + `tsc` (build) are currently implemented in `.forgejo/workflows/ci.yml`. `test:unit` / `test:integration` / `schema_sync` / `publish` are planned for Wave 2 TASK-014 (test matrix) and Wave 4 TASK-026 (publish). A `description-clean` step (grep `R[0-9]+|C-[0-9]+|M-[0-9]+` audit-marker leakage in `src/tools/*.ts` `description:` fields) was originally listed but deferred — for Wave 1 it is enforced via PR code review (R1 audit caught + fixed 2 leaks 2026-05-22).
 
 ---
 

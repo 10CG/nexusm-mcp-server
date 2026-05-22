@@ -22,7 +22,7 @@ export const contextRetrieveTool: ToolDefinition = {
     properties: {
       user_id: {
         type: 'string',
-        description: 'User identifier within tenant scope. Required per-call (R2 C-1).',
+        description: 'User identifier within tenant scope. Required per-call.',
       },
       query: { type: 'string' },
       limit: { type: 'integer', default: 10, minimum: 1, maximum: 50 },
@@ -57,7 +57,7 @@ export const contextRetrieveTool: ToolDefinition = {
       _warnings: {
         type: 'array',
         items: { type: 'string' },
-        description: 'R2 M-3 partial-result warning channel',
+        description: 'Partial-result warning channel; populated when one or more retrieval layers degraded.',
       },
     },
     required: ['retrieve_id', 'memories', 'conversation_turns', 'knowledge_entities'],

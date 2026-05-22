@@ -88,6 +88,10 @@ async function startHttp(server: Server): Promise<void> {
   const { createServer: createHttpServer } = await import('node:http');
 
   const port = Number.parseInt(process.env.NEXUS_MCP_HTTP_PORT ?? '3000', 10);
+  // TODO(wave-2): per-request `server.connect()` + per-request transport
+  // is scaffold-only. Production HTTP transport needs session-keyed Server
+  // lifecycle per MCP spec (see TASK-014 integration tests + TASK-018
+  // middleware in detailed-tasks.yaml).
   const httpServer = createHttpServer(async (req, res) => {
     const transport = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined });
     await server.connect(transport);
