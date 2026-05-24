@@ -1,6 +1,6 @@
 {
   "name": "@nexusm/mcp-server",
-  "version": "0.0.1",
+  "version": "0.1.0",
   "description": "Nexusm MCP Server — generic MCP server exposing Nexusm core capabilities to MCP clients via stdio + Streamable HTTP transports.",
   "type": "module",
   "main": "dist/index.js",
