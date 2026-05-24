@@ -82,6 +82,13 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Configure npm registry auth
+        # IMPORTANT: the Aether runner image has a baked-in default registry
+        # pointing at the internal Verdaccio cache (http://192.168.69.206:4873/).
+        # That cache is read-only for proxied public packages; trying to
+        # publish there returns ENEEDAUTH. We MUST explicitly set the registry
+        # to https://registry.npmjs.org/ (both in .npmrc and on npm publish)
+        # so the publish PUT goes to the public registry, not the internal
+        # cache.
         env:
           NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
         run: |
@@ -90,7 +97,10 @@ jobs:
             echo "::error::Cannot publish without auth. See RUNBOOK.md §1.2."
             exit 1
           fi
-          echo "//registry.npmjs.org/:_authToken=${NPM_TOKEN}" > ~/.npmrc
+          cat > ~/.npmrc <<EOF
+          registry=https://registry.npmjs.org/
+          //registry.npmjs.org/:_authToken=${NPM_TOKEN}
+          EOF
 
       - name: Validate tag ↔ package.json version match
         # The tag prefix is `v` (e.g. v0.1.0); package.json has the raw
@@ -141,12 +151,16 @@ jobs:
         # --access public: required on first publish of a scoped package
         # (npm defaults scoped to private). Idempotent on subsequent
         # versions but kept as self-documenting flag.
+        # --registry: explicitly target the public registry to defeat the
+        # Aether runner's baked-in Verdaccio default (192.168.69.206:4873).
+        # The ~/.npmrc above already sets this, but the CLI flag is
+        # belt-and-suspenders and survives any future ~/.npmrc reset.
         # --provenance is intentionally NOT set — Forgejo Actions doesn't
         # yet issue OIDC tokens compatible with npm provenance. Revisit
         # when aether-plugin#XX lands OIDC support.
         env:
           NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
-        run: npm publish --access public
+        run: npm publish --access public --registry=https://registry.npmjs.org/
 
       - name: Verify published version is queryable on registry
         # npm publish returning 2xx does not guarantee the version appears
@@ -159,7 +173,7 @@ jobs:
           PKG="$(node -p "require('./package.json').name")"
           VER="$(node -p "require('./package.json').version")"
           for i in 1 2 3 4 5 6; do
-            if npm view "${PKG}@${VER}" version >/dev/null 2>&1; then
+            if npm view --registry=https://registry.npmjs.org/ "${PKG}@${VER}" version >/dev/null 2>&1; then
               echo "Confirmed: ${PKG}@${VER} is queryable on npmjs.com"
               exit 0
             fi
