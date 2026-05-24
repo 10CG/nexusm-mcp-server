@@ -42,8 +42,7 @@ vi.mock('@nexusm/sdk', () => {
   return {
     NexusClient: vi.fn().mockImplementation(() => ({
       feedback: {
-        submit: (retrieveId: string, body: Record<string, unknown>) =>
-          submitSpy(retrieveId, body),
+        submit: (retrieveId: string, body: Record<string, unknown>) => submitSpy(retrieveId, body),
       },
     })),
   };

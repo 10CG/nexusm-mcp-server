@@ -51,9 +51,8 @@ vi.mock('../../../src/auth.js', () => ({
 }));
 
 // Late import AFTER vi.mock so the mocks bind correctly.
-const { contextRetrieveTool, validateAsOf, __setClientForTesting } = await import(
-  '../../../src/tools/context.js'
-);
+const { contextRetrieveTool, validateAsOf, __setClientForTesting } =
+  await import('../../../src/tools/context.js');
 const { NexusError, McpErrorCode } = await import('../../../src/errors.js');
 
 // -----------------------------------------------------------------------
@@ -64,15 +63,23 @@ const HAPPY_RESPONSE = {
   retrieve_id: '11111111-2222-3333-4444-555555555555',
   profile: {
     memories: [
-      { id: 'm1', content: 'likes tea', memory_type: 'semantic', created_at: '2026-05-01T00:00:00Z' },
-      { id: 'm2', content: 'prefers Vim', memory_type: 'semantic', created_at: '2026-05-02T00:00:00Z' },
+      {
+        id: 'm1',
+        content: 'likes tea',
+        memory_type: 'semantic',
+        created_at: '2026-05-01T00:00:00Z',
+      },
+      {
+        id: 'm2',
+        content: 'prefers Vim',
+        memory_type: 'semantic',
+        created_at: '2026-05-02T00:00:00Z',
+      },
     ],
     total_count: 2,
   },
   history: {
-    messages: [
-      { role: 'user', content: 'hi', created_at: '2026-05-10T00:00:00Z' },
-    ],
+    messages: [{ role: 'user', content: 'hi', created_at: '2026-05-10T00:00:00Z' }],
   },
   graph: {
     entities: [{ id: 'e1', name: 'Acme', entity_type: 'Organization' }],
@@ -92,7 +99,9 @@ afterEach(() => {
   __setClientForTesting(null);
 });
 
-function getStructured(result: Awaited<ReturnType<typeof contextRetrieveTool.handler>>): Record<string, unknown> {
+function getStructured(
+  result: Awaited<ReturnType<typeof contextRetrieveTool.handler>>,
+): Record<string, unknown> {
   // Prefer the structured field; fall back to parsing content[1].text.
   const sc = (result as { structuredContent?: Record<string, unknown> }).structuredContent;
   if (sc) return sc;
@@ -158,8 +167,7 @@ describe('nexus.context_retrieve — as_of validation', () => {
   it('accepts a 30-day-old ISO 8601 with timezone and forwards it to SDK (case 3)', async () => {
     retrieveSpy.mockResolvedValue(HAPPY_RESPONSE);
 
-    const thirtyDaysAgo = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000)
-      .toISOString(); // "...Z" — has timezone
+    const thirtyDaysAgo = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString(); // "...Z" — has timezone
 
     await contextRetrieveTool.handler({
       user_id: 'u1',
@@ -188,7 +196,9 @@ describe('nexus.context_retrieve — as_of validation', () => {
       caught = e;
     }
     expect(caught).toBeInstanceOf(NexusError);
-    expect((caught as InstanceType<typeof NexusError>).mcpErrorCode).toBe(McpErrorCode.InvalidParams);
+    expect((caught as InstanceType<typeof NexusError>).mcpErrorCode).toBe(
+      McpErrorCode.InvalidParams,
+    );
     expect((caught as Error).message).toMatch(/90 days/);
     expect(retrieveSpy).not.toHaveBeenCalled();
   });
@@ -207,7 +217,9 @@ describe('nexus.context_retrieve — as_of validation', () => {
       caught = e;
     }
     expect(caught).toBeInstanceOf(NexusError);
-    expect((caught as InstanceType<typeof NexusError>).mcpErrorCode).toBe(McpErrorCode.InvalidParams);
+    expect((caught as InstanceType<typeof NexusError>).mcpErrorCode).toBe(
+      McpErrorCode.InvalidParams,
+    );
     expect((caught as Error).message).toMatch(/timezone/);
     expect(retrieveSpy).not.toHaveBeenCalled();
   });
@@ -215,7 +227,9 @@ describe('nexus.context_retrieve — as_of validation', () => {
   it('validateAsOf is a pure helper that throws or returns silently', () => {
     // Sanity check — covers the helper directly without going through SDK.
     expect(() => validateAsOf(undefined)).not.toThrow();
-    expect(() => validateAsOf('2026-05-01T00:00:00Z', new Date('2026-05-15T00:00:00Z'))).not.toThrow();
+    expect(() =>
+      validateAsOf('2026-05-01T00:00:00Z', new Date('2026-05-15T00:00:00Z')),
+    ).not.toThrow();
     expect(() => validateAsOf('not-a-date')).toThrow(NexusError);
   });
 });
@@ -237,7 +251,9 @@ describe('nexus.context_retrieve — SDK failures propagate', () => {
       caught = e;
     }
     expect(caught).toBeInstanceOf(NexusError);
-    expect((caught as InstanceType<typeof NexusError>).mcpErrorCode).toBe(McpErrorCode.InternalError);
+    expect((caught as InstanceType<typeof NexusError>).mcpErrorCode).toBe(
+      McpErrorCode.InternalError,
+    );
     expect((caught as Error).message).toMatch(/ECONNREFUSED/);
   });
 });
@@ -264,7 +280,8 @@ describe('nexus.context_retrieve — banner format', () => {
     const result = await contextRetrieveTool.handler({ user_id: 'u1', query: 'q' });
     const text = (result.content[0] as { text: string }).text;
     // Regex per brief: `## Retrieved context (retrieve_id=<uuid>)\n`
-    const re = /^## Retrieved context \(retrieve_id=[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\)\n/;
+    const re =
+      /^## Retrieved context \(retrieve_id=[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\)\n/;
     expect(text).toMatch(re);
   });
 });

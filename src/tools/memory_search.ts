@@ -157,7 +157,9 @@ export const memorySearchTool: ToolDefinition = {
     // semantically-correct Unauthorized/RateLimited codes from TASK-013.
     let result;
     try {
-      result = await client.memories.search(body as unknown as Parameters<typeof client.memories.search>[0]);
+      result = await client.memories.search(
+        body as unknown as Parameters<typeof client.memories.search>[0],
+      );
     } catch (err: unknown) {
       if (isAxiosLikeError(err)) {
         const status = err.response?.status ?? null;

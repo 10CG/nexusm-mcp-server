@@ -14,11 +14,7 @@
  */
 
 /** Required env var keys. Order is preserved when reporting missing vars. */
-const REQUIRED_ENV_VARS = [
-  "NEXUS_API_URL",
-  "NEXUS_API_TOKEN",
-  "NEXUS_TENANT_ID",
-] as const;
+const REQUIRED_ENV_VARS = ['NEXUS_API_URL', 'NEXUS_API_TOKEN', 'NEXUS_TENANT_ID'] as const;
 
 type RequiredEnvVar = (typeof REQUIRED_ENV_VARS)[number];
 
@@ -72,7 +68,7 @@ export function loadAuthConfig(
 
   for (const key of REQUIRED_ENV_VARS) {
     const raw = env[key];
-    if (raw === undefined || raw.trim() === "") {
+    if (raw === undefined || raw.trim() === '') {
       missing.push(key);
     } else {
       values[key] = raw.trim();
@@ -83,15 +79,15 @@ export function loadAuthConfig(
     // Build message from var *names* only — never values. This guarantees
     // a leaked token cannot reach stderr via this path even if a future
     // refactor accidentally passes `env` into the message.
-    const list = missing.join(", ");
-    const noun = missing.length === 1 ? "variable is" : "variables are";
+    const list = missing.join(', ');
+    const noun = missing.length === 1 ? 'variable is' : 'variables are';
     const msg =
       `[nexusm-mcp-server] Required environment ${noun} missing: ${list}. ` +
       `Set them before starting the server. See RUNBOOK.md.\n`;
     io.stderr.write(msg);
     io.exit(1);
     // `exit` is typed `never`; unreachable, but satisfies control-flow analysis.
-    throw new Error("unreachable");
+    throw new Error('unreachable');
   }
 
   return {

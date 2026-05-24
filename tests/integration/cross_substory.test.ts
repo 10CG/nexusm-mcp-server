@@ -88,20 +88,17 @@ process.env.NEXUS_TENANT_ID = 'tenant-CROSS-SUBSTORY-TEST';
 // hoisted factory).
 // ---------------------------------------------------------------------------
 
-const {
-  contextRetrieveSpy,
-  memoriesSearchSpy,
-  memoriesCreateSpy,
-  sdkClientCtorSpy,
-} = vi.hoisted(() => ({
-  contextRetrieveSpy: vi.fn(),
-  memoriesSearchSpy: vi.fn(),
-  memoriesCreateSpy: vi.fn(),
-  // Constructor spy tracks which config the module passes to NexusClient.
-  // Useful for asserting that AuthConfig values from loadAuthConfig() are
-  // forwarded correctly without leaking the token.
-  sdkClientCtorSpy: vi.fn(),
-}));
+const { contextRetrieveSpy, memoriesSearchSpy, memoriesCreateSpy, sdkClientCtorSpy } = vi.hoisted(
+  () => ({
+    contextRetrieveSpy: vi.fn(),
+    memoriesSearchSpy: vi.fn(),
+    memoriesCreateSpy: vi.fn(),
+    // Constructor spy tracks which config the module passes to NexusClient.
+    // Useful for asserting that AuthConfig values from loadAuthConfig() are
+    // forwarded correctly without leaking the token.
+    sdkClientCtorSpy: vi.fn(),
+  }),
+);
 
 vi.mock('@nexusm/sdk', () => {
   class NexusClient {
@@ -130,11 +127,7 @@ import {
 } from '../../src/errors.js';
 
 // Tool handlers + testing seams
-import {
-  contextRetrieveTool,
-  __setClientForTesting,
-  type ContextClient,
-} from '../../src/tools/context.js';
+import { contextRetrieveTool, __setClientForTesting } from '../../src/tools/context.js';
 
 import {
   memorySearchTool,

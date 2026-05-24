@@ -28,18 +28,10 @@
 import { createRequire } from 'node:module';
 import { Server } from '@modelcontextprotocol/sdk/server/index.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
-import {
-  CallToolRequestSchema,
-  ListToolsRequestSchema,
-} from '@modelcontextprotocol/sdk/types.js';
+import { CallToolRequestSchema, ListToolsRequestSchema } from '@modelcontextprotocol/sdk/types.js';
 
 import { tools, toolsByName } from './tools/index.js';
-import {
-  startMetricsServer,
-  emitToolCall,
-  emitToolDuration,
-  emitToolsList,
-} from './metrics.js';
+import { startMetricsServer, emitToolCall, emitToolDuration, emitToolsList } from './metrics.js';
 
 /**
  * Extract the calling MCP client identifier from a request, with fallback.
@@ -124,9 +116,8 @@ async function startStdio(server: Server): Promise<void> {
 
 async function startHttp(server: Server): Promise<void> {
   // Lazy import so stdio installs aren't forced to bundle the HTTP transport.
-  const { StreamableHTTPServerTransport } = await import(
-    '@modelcontextprotocol/sdk/server/streamableHttp.js'
-  );
+  const { StreamableHTTPServerTransport } =
+    await import('@modelcontextprotocol/sdk/server/streamableHttp.js');
   const { createServer: createHttpServer } = await import('node:http');
 
   const port = Number.parseInt(process.env.NEXUS_MCP_HTTP_PORT ?? '3000', 10);
@@ -157,9 +148,7 @@ async function main(): Promise<void> {
   } else if (transportMode === 'stdio') {
     await startStdio(server);
   } else {
-    console.error(
-      `Unknown NEXUS_MCP_TRANSPORT="${transportMode}" (expected "stdio" or "http")`,
-    );
+    console.error(`Unknown NEXUS_MCP_TRANSPORT="${transportMode}" (expected "stdio" or "http")`);
     process.exit(1);
   }
 }
