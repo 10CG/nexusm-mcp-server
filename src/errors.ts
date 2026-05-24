@@ -16,7 +16,7 @@
  *   explicitly, not via serialization.
  */
 
-import type { AuthConfig } from "./auth.js";
+import type { AuthConfig } from './auth.js';
 
 /**
  * MCP / JSON-RPC error codes surfaced by this server.
@@ -112,7 +112,7 @@ export class NexusError extends Error {
     },
   ) {
     super(message);
-    this.name = "NexusError";
+    this.name = 'NexusError';
     this.mcpErrorCode = mcpErrorCode;
     this.httpStatus = httpStatus;
     this.retryable = options?.retryable ?? false;
@@ -202,9 +202,9 @@ interface AxiosLikeError {
  */
 export function isAxiosLikeError(err: unknown): err is AxiosLikeError {
   return (
-    typeof err === "object" &&
+    typeof err === 'object' &&
     err !== null &&
-    (err as Record<string, unknown>)["isAxiosError"] === true
+    (err as Record<string, unknown>)['isAxiosError'] === true
   );
 }
 
@@ -219,7 +219,7 @@ function parseRetryAfterSeconds(
   headers: Record<string, string | string[] | undefined> | undefined,
 ): number | undefined {
   if (headers === undefined) return undefined;
-  const raw = headers["retry-after"] ?? headers["Retry-After"];
+  const raw = headers['retry-after'] ?? headers['Retry-After'];
   const value = Array.isArray(raw) ? raw[0] : raw;
   if (value === undefined) return undefined;
   // Integer seconds
@@ -275,22 +275,16 @@ export function mapHttpStatusToMcpError(
   // treat `body` as a hint bag for non-HTTP paths).
   if (httpStatus === null) {
     const hint = body as Record<string, unknown> | null | undefined;
-    if (hint?.["timeout"] === true) {
-      return new NexusError(
-        "Request timed out",
-        McpErrorCode.RequestTimeout,
-        null,
-        undefined,
-        { retryable: true, data: { timeout: true } },
-      );
+    if (hint?.['timeout'] === true) {
+      return new NexusError('Request timed out', McpErrorCode.RequestTimeout, null, undefined, {
+        retryable: true,
+        data: { timeout: true },
+      });
     }
-    return new NexusError(
-      "Network error",
-      McpErrorCode.InternalError,
-      null,
-      undefined,
-      { retryable: true, data: { network: true } },
-    );
+    return new NexusError('Network error', McpErrorCode.InternalError, null, undefined, {
+      retryable: true,
+      data: { network: true },
+    });
   }
 
   switch (true) {
@@ -305,7 +299,7 @@ export function mapHttpStatusToMcpError(
 
     case httpStatus === 404:
       return new NexusError(
-        "Resource not found (HTTP 404)",
+        'Resource not found (HTTP 404)',
         McpErrorCode.MethodNotFound,
         404,
         undefined,
@@ -314,7 +308,7 @@ export function mapHttpStatusToMcpError(
 
     case httpStatus === 422:
       return new NexusError(
-        "Invalid parameters (HTTP 422)",
+        'Invalid parameters (HTTP 422)',
         McpErrorCode.InvalidParams,
         422,
         undefined,
@@ -325,20 +319,17 @@ export function mapHttpStatusToMcpError(
       const retryAfterSeconds = parseRetryAfterSeconds(headers);
       const data: Record<string, unknown> = {};
       if (retryAfterSeconds !== undefined) {
-        data["retry_after_seconds"] = retryAfterSeconds;
+        data['retry_after_seconds'] = retryAfterSeconds;
       }
-      return new NexusError(
-        "Rate limited (HTTP 429)",
-        McpErrorCode.RateLimited,
-        429,
-        undefined,
-        { retryable: true, data: Object.keys(data).length > 0 ? data : undefined },
-      );
+      return new NexusError('Rate limited (HTTP 429)', McpErrorCode.RateLimited, 429, undefined, {
+        retryable: true,
+        data: Object.keys(data).length > 0 ? data : undefined,
+      });
     }
 
     case httpStatus === 503:
       return new NexusError(
-        "Service unavailable (HTTP 503)",
+        'Service unavailable (HTTP 503)',
         McpErrorCode.ConnectionClosed,
         503,
         undefined,
@@ -402,5 +393,5 @@ export interface NetworkError extends NexusError {
  * cancel from other failures in logs / metrics.
  */
 export interface CancelError extends NexusError {
-  readonly reason: "client_cancel" | "timeout" | "signal";
+  readonly reason: 'client_cancel' | 'timeout' | 'signal';
 }

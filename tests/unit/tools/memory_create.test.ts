@@ -46,7 +46,6 @@ vi.mock('../../../src/auth.js', () => ({
   })),
 }));
 
-// eslint-disable-next-line import/first
 import { memoryCreateTool, __resetClientForTesting } from '../../../src/tools/memory_create.js';
 
 beforeEach(() => {
@@ -63,9 +62,7 @@ beforeEach(() => {
  * matchers don't expose the thrown instance, so we use a try/catch to
  * inspect `mcpErrorCode` and `message` on the same object.
  */
-async function expectThrowsNexusError(
-  fn: () => Promise<unknown>,
-): Promise<NexusError> {
+async function expectThrowsNexusError(fn: () => Promise<unknown>): Promise<NexusError> {
   try {
     await fn();
   } catch (e) {

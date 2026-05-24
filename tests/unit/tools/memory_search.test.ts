@@ -45,9 +45,8 @@ process.env.NEXUS_TENANT_ID = 'test-tenant';
 
 // Import after vi.mock + env setup so the SDK mock is in place when the
 // module's top-level imports resolve.
-const { memorySearchTool, __resetClientForTesting } = await import(
-  '../../../src/tools/memory_search.js'
-);
+const { memorySearchTool, __resetClientForTesting } =
+  await import('../../../src/tools/memory_search.js');
 
 beforeEach(() => {
   searchSpy.mockReset();

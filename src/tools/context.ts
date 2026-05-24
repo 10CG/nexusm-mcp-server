@@ -197,10 +197,7 @@ async function handler(args: Record<string, unknown>): Promise<CallToolResult> {
     }
     // Unknown / plain Error: surface as InternalError.
     const msg = err instanceof Error ? err.message : String(err);
-    throw new NexusError(
-      `nexus.context_retrieve failed: ${msg}`,
-      McpErrorCode.InternalError,
-    );
+    throw new NexusError(`nexus.context_retrieve failed: ${msg}`, McpErrorCode.InternalError);
   }
 
   // ---- Map SDK response → MCP outputSchema shape ----------------------
@@ -292,7 +289,8 @@ export const contextRetrieveTool: ToolDefinition = {
       _warnings: {
         type: 'array',
         items: { type: 'string' },
-        description: 'Partial-result warning channel; populated when one or more retrieval layers degraded.',
+        description:
+          'Partial-result warning channel; populated when one or more retrieval layers degraded.',
       },
     },
     required: ['retrieve_id', 'memories', 'conversation_turns', 'knowledge_entities'],

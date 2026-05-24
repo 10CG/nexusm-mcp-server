@@ -108,10 +108,7 @@ interface ConflictResolutionEcho {
 function validateConflictResolution(cr: unknown): ConflictResolutionEcho | null {
   if (cr === null || cr === undefined) return null;
   if (typeof cr !== 'object') {
-    throw new NexusError(
-      'SDK returned non-object conflict_resolution',
-      McpErrorCode.InternalError,
-    );
+    throw new NexusError('SDK returned non-object conflict_resolution', McpErrorCode.InternalError);
   }
   const obj = cr as Record<string, unknown>;
   const status = obj.status;
@@ -152,7 +149,7 @@ export const memoryCreateTool: ToolDefinition = {
         enum: [...VALID_UNTIL_SOURCE_ENUM],
         nullable: true,
         description:
-          "v6 US-035 temporal validity (backend ValidUntilSource Literal, 5 values, locked in proposal §R2.1). " +
+          'v6 US-035 temporal validity (backend ValidUntilSource Literal, 5 values, locked in proposal §R2.1). ' +
           "MCP client typically passes 'sdk_provided' (user-declared) or omits to let backend worker auto-extract. " +
           'Any value outside the 5-enum is rejected at args parse stage with InvalidParams.',
       },
@@ -183,10 +180,18 @@ export const memoryCreateTool: ToolDefinition = {
   handler: async (args) => {
     // ---- Required fields ----
     if (typeof args.user_id !== 'string' || args.user_id.length === 0) {
-      throw new NexusError('user_id is required (non-empty string)', McpErrorCode.InvalidParams, 422);
+      throw new NexusError(
+        'user_id is required (non-empty string)',
+        McpErrorCode.InvalidParams,
+        422,
+      );
     }
     if (typeof args.content !== 'string' || args.content.length === 0) {
-      throw new NexusError('content is required (non-empty string)', McpErrorCode.InvalidParams, 422);
+      throw new NexusError(
+        'content is required (non-empty string)',
+        McpErrorCode.InvalidParams,
+        422,
+      );
     }
 
     // ---- memory_type enum + default ----
@@ -281,7 +286,7 @@ export const memoryCreateTool: ToolDefinition = {
     try {
       created = (await client.memories.create(
         body as unknown as Parameters<typeof client.memories.create>[0],
-      )) as Record<string, unknown>;
+      )) as unknown as Record<string, unknown>;
     } catch (err: unknown) {
       if (isAxiosLikeError(err)) {
         const status = err.response?.status ?? null;

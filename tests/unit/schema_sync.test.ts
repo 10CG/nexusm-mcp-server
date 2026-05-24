@@ -20,11 +20,7 @@
  */
 
 import { describe, expect, it } from 'vitest';
-import {
-  contextRequestSchema,
-  memoryCreateSchema,
-  memorySearchSchema,
-} from '@nexusm/sdk';
+import { contextRequestSchema, memoryCreateSchema, memorySearchSchema } from '@nexusm/sdk';
 
 import { contextRetrieveTool } from '../../src/tools/context.js';
 import { memoryCreateTool } from '../../src/tools/memory_create.js';

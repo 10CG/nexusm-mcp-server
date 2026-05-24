@@ -58,13 +58,7 @@ collectDefaultMetrics({ register: registry });
 // 2. Allowlist for the `client` label (R2 ai D-5 cardinality guard)
 // ---------------------------------------------------------------------------
 
-const KNOWN_CLIENTS = new Set<string>([
-  'claude-code',
-  'cursor',
-  'windsurf',
-  'cline',
-  'mcp-cli',
-]);
+const KNOWN_CLIENTS = new Set<string>(['claude-code', 'cursor', 'windsurf', 'cline', 'mcp-cli']);
 
 /**
  * Normalise a raw client identifier to an allowlisted value.

@@ -127,15 +127,13 @@ describe('Case 3 — unknown client label coercion and debug counter', () => {
     expect(output).toContain('client="unknown"');
     // The raw "foobar" must NOT appear as a client label value on the main counter
     // (it should only appear in the debug counter's raw label)
-    const mainCounterFoobar =
-      /nexus_mcp_tool_calls_total\{[^}]*client="foobar"[^}]*\}/m;
+    const mainCounterFoobar = /nexus_mcp_tool_calls_total\{[^}]*client="foobar"[^}]*\}/m;
     expect(output).not.toMatch(mainCounterFoobar);
 
     // The debug counter must have raw="foobar" with value 1
     expect(output).toContain('nexus_mcp_unknown_client_total');
     expect(output).toContain('raw="foobar"');
-    const debugRegex =
-      /nexus_mcp_unknown_client_total\{[^}]*raw="foobar"[^}]*\}\s+1(\s|$)/m;
+    const debugRegex = /nexus_mcp_unknown_client_total\{[^}]*raw="foobar"[^}]*\}\s+1(\s|$)/m;
     expect(output).toMatch(debugRegex);
   });
 
@@ -156,8 +154,7 @@ describe('Case 3 — unknown client label coercion and debug counter', () => {
 
     // The unknown counter should not have been incremented for 'cursor'
     // (the metric may appear in output as 0 or not at all)
-    const debugRegex =
-      /nexus_mcp_unknown_client_total\{[^}]*raw="cursor"[^}]*\}\s+[1-9]/m;
+    const debugRegex = /nexus_mcp_unknown_client_total\{[^}]*raw="cursor"[^}]*\}\s+[1-9]/m;
     expect(output).not.toMatch(debugRegex);
   });
 });
@@ -174,8 +171,7 @@ describe('Case 4 — nexus_mcp_tool_description_version Info gauge', () => {
 
     expect(output).toContain('nexus_mcp_tool_description_version');
     expect(output).toContain('hash="a1b2c3d4"');
-    const gaugeRegex =
-      /nexus_mcp_tool_description_version\{[^}]*hash="a1b2c3d4"[^}]*\}\s+1(\s|$)/m;
+    const gaugeRegex = /nexus_mcp_tool_description_version\{[^}]*hash="a1b2c3d4"[^}]*\}\s+1(\s|$)/m;
     expect(output).toMatch(gaugeRegex);
   });
 });
@@ -214,8 +210,7 @@ describe('emitToolsList — nexus_mcp_tools_list_calls_total', () => {
 
     const output = await registry.metrics();
     expect(output).toContain('nexus_mcp_tools_list_calls_total');
-    const lineRegex =
-      /nexus_mcp_tools_list_calls_total\{[^}]*client="cline"[^}]*\}\s+2(\s|$)/m;
+    const lineRegex = /nexus_mcp_tools_list_calls_total\{[^}]*client="cline"[^}]*\}\s+2(\s|$)/m;
     expect(output).toMatch(lineRegex);
   });
 });

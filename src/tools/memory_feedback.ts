@@ -167,9 +167,7 @@ function parseAndValidate(args: Record<string, unknown>): ParsedArgs {
       reject("'expected_missing' must be a string when provided");
     }
     if ((emRaw as string).length > 2000) {
-      reject(
-        `'expected_missing' exceeds maxLength 2000 (got ${(emRaw as string).length})`,
-      );
+      reject(`'expected_missing' exceeds maxLength 2000 (got ${(emRaw as string).length})`);
     }
     expected_missing = emRaw as string;
   }

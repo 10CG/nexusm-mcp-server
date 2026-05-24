@@ -164,11 +164,7 @@ function spawnServer(): Promise<ChildProcessWithoutNullStreams> {
     child.on('exit', (code) => {
       clearTimeout(timeout);
       if (code !== null && code !== 0) {
-        reject(
-          new Error(
-            `Server exited prematurely with code ${code}. stderr:\n${stderrBuf}`,
-          ),
-        );
+        reject(new Error(`Server exited prematurely with code ${code}. stderr:\n${stderrBuf}`));
       }
     });
   });
@@ -178,407 +174,401 @@ function spawnServer(): Promise<ChildProcessWithoutNullStreams> {
 // Suite
 // ---------------------------------------------------------------------------
 
-describe.skipIf(!E2E_ENABLED)(
-  'E2E: MCP protocol round-trip (requires NEXUS_TEST_API_URL)',
-  () => {
-    let serverProcess: ChildProcessWithoutNullStreams;
-    let client: Client;
-    let capturedRetrieveId: string = PLACEHOLDER_UUID;
+describe.skipIf(!E2E_ENABLED)('E2E: MCP protocol round-trip (requires NEXUS_TEST_API_URL)', () => {
+  let serverProcess: ChildProcessWithoutNullStreams;
+  let client: Client;
+  let capturedRetrieveId: string = PLACEHOLDER_UUID;
 
-    beforeAll(async () => {
-      serverProcess = await spawnServer();
+  beforeAll(async () => {
+    serverProcess = await spawnServer();
 
-      // Build the MCP SDK client connected to the spawned process's stdio.
-      const transport = new StdioClientTransport({
-        command: 'node',
-        args: [SERVER_BINARY],
-        env: {
-          ...process.env,
-          NEXUS_API_URL: NEXUS_TEST_API_URL,
-          NEXUS_API_TOKEN: NEXUS_TEST_API_TOKEN,
-          NEXUS_TENANT_ID: NEXUS_TEST_TENANT_ID,
-          NEXUS_METRICS_DISABLED: '1',
-        },
+    // Build the MCP SDK client connected to the spawned process's stdio.
+    const transport = new StdioClientTransport({
+      command: 'node',
+      args: [SERVER_BINARY],
+      env: {
+        ...process.env,
+        NEXUS_API_URL: NEXUS_TEST_API_URL,
+        NEXUS_API_TOKEN: NEXUS_TEST_API_TOKEN,
+        NEXUS_TENANT_ID: NEXUS_TEST_TENANT_ID,
+        NEXUS_METRICS_DISABLED: '1',
+      },
+    });
+
+    client = new Client({ name: 'e2e-test-client', version: '0.0.1' }, { capabilities: {} });
+
+    await client.connect(transport);
+  }, 20_000 /* generous beforeAll timeout */);
+
+  afterAll(async () => {
+    // Gracefully close the MCP client first (sends a proper disconnect).
+    try {
+      await client.close();
+    } catch {
+      // Ignore close errors — the process may already be gone.
+    }
+
+    // Kill the server process and wait for it to exit cleanly.
+    if (serverProcess && !serverProcess.killed) {
+      serverProcess.kill('SIGTERM');
+      await new Promise<void>((res) => {
+        serverProcess.on('exit', () => res());
+        // Hard kill after 3 s if SIGTERM is ignored.
+        setTimeout(() => {
+          if (!serverProcess.killed) serverProcess.kill('SIGKILL');
+          res();
+        }, 3_000);
       });
+    }
+  }, 10_000);
 
-      client = new Client(
-        { name: 'e2e-test-client', version: '0.0.1' },
-        { capabilities: {} },
-      );
+  // -----------------------------------------------------------------------
+  // 1. initialize handshake
+  // -----------------------------------------------------------------------
 
-      await client.connect(transport);
-    }, 20_000 /* generous beforeAll timeout */);
+  it('initialize: serverInfo.name === "nexus" and version matches package.json', async () => {
+    // The MCP client sends initialize during connect(); we read the cached
+    // server info from the client object directly.
+    const serverInfo = client.getServerVersion();
+    expect(serverInfo).toBeDefined();
+    expect(serverInfo?.name).toBe('nexus');
+    expect(serverInfo?.version).toBe(pkg.version);
+  });
 
-    afterAll(async () => {
-      // Gracefully close the MCP client first (sends a proper disconnect).
-      try {
-        await client.close();
-      } catch {
-        // Ignore close errors — the process may already be gone.
+  // -----------------------------------------------------------------------
+  // 2. tools/list
+  // -----------------------------------------------------------------------
+
+  it('tools/list: returns exactly 4 tools in declared registry order', async () => {
+    const response = await client.listTools();
+    expect(response.tools).toHaveLength(4);
+
+    const names = response.tools.map((t) => t.name);
+    expect(names).toEqual([
+      'nexus.context_retrieve',
+      'nexus.memory_search',
+      'nexus.memory_create',
+      'nexus.memory_feedback',
+    ]);
+  });
+
+  it('tools/list: each tool has inputSchema + outputSchema with type="object"', async () => {
+    const response = await client.listTools();
+    for (const tool of response.tools) {
+      expect(tool.inputSchema).toBeDefined();
+      expect(tool.inputSchema.type).toBe('object');
+      // outputSchema is extension beyond MCP base spec — present in Wave 2 tools.
+      // Cast: the SDK type may not declare outputSchema in ToolDefinition but
+      // the server emits it and it should be present in the raw response.
+      const extended = tool as unknown as { outputSchema?: { type?: string } };
+      if (extended.outputSchema !== undefined) {
+        expect(extended.outputSchema.type).toBe('object');
       }
+    }
+  });
 
-      // Kill the server process and wait for it to exit cleanly.
-      if (serverProcess && !serverProcess.killed) {
-        serverProcess.kill('SIGTERM');
-        await new Promise<void>((res) => {
-          serverProcess.on('exit', () => res());
-          // Hard kill after 3 s if SIGTERM is ignored.
-          setTimeout(() => {
-            if (!serverProcess.killed) serverProcess.kill('SIGKILL');
-            res();
-          }, 3_000);
-        });
-      }
-    }, 10_000);
+  it('tools/list: nexus.context_retrieve has required fields [user_id, query]', async () => {
+    const response = await client.listTools();
+    const tool = response.tools.find((t) => t.name === 'nexus.context_retrieve');
+    expect(tool).toBeDefined();
+    expect(tool!.inputSchema.required).toEqual(expect.arrayContaining(['user_id', 'query']));
+  });
 
-    // -----------------------------------------------------------------------
-    // 1. initialize handshake
-    // -----------------------------------------------------------------------
+  it('tools/list: nexus.memory_feedback has required fields [user_id, retrieve_id, rating]', async () => {
+    const response = await client.listTools();
+    const tool = response.tools.find((t) => t.name === 'nexus.memory_feedback');
+    expect(tool).toBeDefined();
+    expect(tool!.inputSchema.required).toEqual(
+      expect.arrayContaining(['user_id', 'retrieve_id', 'rating']),
+    );
+  });
 
-    it('initialize: serverInfo.name === "nexus" and version matches package.json', async () => {
-      // The MCP client sends initialize during connect(); we read the cached
-      // server info from the client object directly.
-      const serverInfo = client.getServerVersion();
-      expect(serverInfo).toBeDefined();
-      expect(serverInfo?.name).toBe('nexus');
-      expect(serverInfo?.version).toBe(pkg.version);
+  // -----------------------------------------------------------------------
+  // 3. tools/call nexus.context_retrieve
+  // -----------------------------------------------------------------------
+
+  it('nexus.context_retrieve: response contains retrieve_id banner in content[0].text', async () => {
+    const result = await client.callTool({
+      name: 'nexus.context_retrieve',
+      arguments: {
+        user_id: TEST_USER_ID,
+        query: 'e2e integration test query',
+        limit: 5,
+      },
     });
 
-    // -----------------------------------------------------------------------
-    // 2. tools/list
-    // -----------------------------------------------------------------------
+    // CallToolResult.isError — if true, the tool raised an application error.
+    expect(result.isError).toBeFalsy();
 
-    it('tools/list: returns exactly 4 tools in declared registry order', async () => {
-      const response = await client.listTools();
-      expect(response.tools).toHaveLength(4);
+    // content[0] must be a text item with the retrieve_id banner.
+    const content = result.content as Array<{ type: string; text?: string }>;
+    expect(content.length).toBeGreaterThanOrEqual(1);
+    expect(content[0]?.type).toBe('text');
+    expect(content[0]?.text).toMatch(/^## Retrieved context \(retrieve_id=/);
 
-      const names = response.tools.map((t) => t.name);
-      expect(names).toEqual([
-        'nexus.context_retrieve',
-        'nexus.memory_search',
-        'nexus.memory_create',
-        'nexus.memory_feedback',
-      ]);
+    // Extract retrieve_id from the banner for later feedback call.
+    const bannerMatch = content[0]?.text?.match(/retrieve_id=([^)]+)/);
+    if (bannerMatch?.[1] && bannerMatch[1].length > 0) {
+      capturedRetrieveId = bannerMatch[1];
+    }
+  });
+
+  it('nexus.context_retrieve: structuredContent has expected output schema shape', async () => {
+    const result = await client.callTool({
+      name: 'nexus.context_retrieve',
+      arguments: {
+        user_id: TEST_USER_ID,
+        query: 'structured output shape test',
+      },
     });
 
-    it('tools/list: each tool has inputSchema + outputSchema with type="object"', async () => {
-      const response = await client.listTools();
-      for (const tool of response.tools) {
-        expect(tool.inputSchema).toBeDefined();
-        expect(tool.inputSchema.type).toBe('object');
-        // outputSchema is extension beyond MCP base spec — present in Wave 2 tools.
-        // Cast: the SDK type may not declare outputSchema in ToolDefinition but
-        // the server emits it and it should be present in the raw response.
-        const extended = tool as unknown as { outputSchema?: { type?: string } };
-        if (extended.outputSchema !== undefined) {
-          expect(extended.outputSchema.type).toBe('object');
-        }
-      }
+    expect(result.isError).toBeFalsy();
+
+    // structuredContent is an MCP extension (proposal §outputSchema).
+    const structured = (result as unknown as { structuredContent?: unknown }).structuredContent as
+      | Record<string, unknown>
+      | undefined;
+
+    if (structured !== undefined) {
+      // retrieve_id and array fields must be present per outputSchema.
+      expect(structured).toHaveProperty('retrieve_id');
+      expect(Array.isArray(structured['memories'])).toBe(true);
+      expect(Array.isArray(structured['conversation_turns'])).toBe(true);
+      expect(Array.isArray(structured['knowledge_entities'])).toBe(true);
+    }
+  });
+
+  // -----------------------------------------------------------------------
+  // 4. tools/call nexus.memory_search
+  // -----------------------------------------------------------------------
+
+  it('nexus.memory_search: response contains memories array', async () => {
+    const result = await client.callTool({
+      name: 'nexus.memory_search',
+      arguments: {
+        user_id: TEST_USER_ID,
+        query: 'e2e test memory search',
+        limit: 5,
+        mode: 'hybrid',
+      },
     });
 
-    it('tools/list: nexus.context_retrieve has required fields [user_id, query]', async () => {
-      const response = await client.listTools();
-      const tool = response.tools.find((t) => t.name === 'nexus.context_retrieve');
-      expect(tool).toBeDefined();
-      expect(tool!.inputSchema.required).toEqual(expect.arrayContaining(['user_id', 'query']));
+    expect(result.isError).toBeFalsy();
+
+    const content = result.content as Array<{ type: string; text?: string }>;
+    expect(content.length).toBeGreaterThanOrEqual(1);
+    expect(content[0]?.type).toBe('text');
+
+    // The text content must be parseable JSON with a `memories` array.
+    const parsed = JSON.parse(content[0]!.text!) as unknown;
+    expect(parsed).toMatchObject({ memories: expect.any(Array), total: expect.any(Number) });
+  });
+
+  it('nexus.memory_search: structuredContent has memories and total', async () => {
+    const result = await client.callTool({
+      name: 'nexus.memory_search',
+      arguments: {
+        user_id: TEST_USER_ID,
+        query: 'structured content check',
+      },
     });
 
-    it('tools/list: nexus.memory_feedback has required fields [user_id, retrieve_id, rating]', async () => {
-      const response = await client.listTools();
-      const tool = response.tools.find((t) => t.name === 'nexus.memory_feedback');
-      expect(tool).toBeDefined();
-      expect(tool!.inputSchema.required).toEqual(
-        expect.arrayContaining(['user_id', 'retrieve_id', 'rating']),
-      );
+    expect(result.isError).toBeFalsy();
+
+    const structured = (result as unknown as { structuredContent?: unknown }).structuredContent as
+      | Record<string, unknown>
+      | undefined;
+
+    if (structured !== undefined) {
+      expect(structured).toHaveProperty('memories');
+      expect(structured).toHaveProperty('total');
+      expect(Array.isArray(structured['memories'])).toBe(true);
+      expect(typeof structured['total']).toBe('number');
+    }
+  });
+
+  // -----------------------------------------------------------------------
+  // 5. tools/call nexus.memory_create
+  // -----------------------------------------------------------------------
+
+  it('nexus.memory_create: response contains memory_id and created_at', async () => {
+    const result = await client.callTool({
+      name: 'nexus.memory_create',
+      arguments: {
+        user_id: TEST_USER_ID,
+        content: 'E2E integration test memory created at ' + new Date().toISOString(),
+        memory_type: 'episodic',
+        metadata: { source: 'e2e-test', environment: 'ci' },
+      },
     });
 
-    // -----------------------------------------------------------------------
-    // 3. tools/call nexus.context_retrieve
-    // -----------------------------------------------------------------------
+    expect(result.isError).toBeFalsy();
 
-    it('nexus.context_retrieve: response contains retrieve_id banner in content[0].text', async () => {
-      const result = await client.callTool({
-        name: 'nexus.context_retrieve',
-        arguments: {
-          user_id: TEST_USER_ID,
-          query: 'e2e integration test query',
-          limit: 5,
-        },
-      });
+    const content = result.content as Array<{ type: string; text?: string }>;
+    expect(content.length).toBeGreaterThanOrEqual(1);
+    expect(content[0]?.type).toBe('text');
 
-      // CallToolResult.isError — if true, the tool raised an application error.
-      expect(result.isError).toBeFalsy();
+    const parsed = JSON.parse(content[0]!.text!) as Record<string, unknown>;
+    // memory_id is the canonical output field (outputSchema §required).
+    expect(typeof parsed['memory_id']).toBe('string');
+    expect((parsed['memory_id'] as string).length).toBeGreaterThan(0);
+    // created_at must be a non-empty string (ISO 8601 datetime).
+    expect(typeof parsed['created_at']).toBe('string');
+    expect((parsed['created_at'] as string).length).toBeGreaterThan(0);
+  });
 
-      // content[0] must be a text item with the retrieve_id banner.
-      const content = result.content as Array<{ type: string; text?: string }>;
-      expect(content.length).toBeGreaterThanOrEqual(1);
-      expect(content[0]?.type).toBe('text');
-      expect(content[0]?.text).toMatch(/^## Retrieved context \(retrieve_id=/);
-
-      // Extract retrieve_id from the banner for later feedback call.
-      const bannerMatch = content[0]?.text?.match(/retrieve_id=([^)]+)/);
-      if (bannerMatch?.[1] && bannerMatch[1].length > 0) {
-        capturedRetrieveId = bannerMatch[1];
-      }
+  it('nexus.memory_create: structuredContent carries memory_id', async () => {
+    const result = await client.callTool({
+      name: 'nexus.memory_create',
+      arguments: {
+        user_id: TEST_USER_ID,
+        content: 'E2E structured-content assertion ' + new Date().toISOString(),
+        memory_type: 'semantic',
+      },
     });
 
-    it('nexus.context_retrieve: structuredContent has expected output schema shape', async () => {
-      const result = await client.callTool({
-        name: 'nexus.context_retrieve',
-        arguments: {
-          user_id: TEST_USER_ID,
-          query: 'structured output shape test',
-        },
-      });
+    expect(result.isError).toBeFalsy();
 
-      expect(result.isError).toBeFalsy();
+    const structured = (result as unknown as { structuredContent?: unknown }).structuredContent as
+      | Record<string, unknown>
+      | undefined;
 
-      // structuredContent is an MCP extension (proposal §outputSchema).
-      const structured = (result as unknown as { structuredContent?: unknown }).structuredContent as
-        | Record<string, unknown>
-        | undefined;
+    if (structured !== undefined) {
+      expect(typeof structured['memory_id']).toBe('string');
+      expect(typeof structured['created_at']).toBe('string');
+    }
+  });
 
-      if (structured !== undefined) {
-        // retrieve_id and array fields must be present per outputSchema.
-        expect(structured).toHaveProperty('retrieve_id');
-        expect(Array.isArray(structured['memories'])).toBe(true);
-        expect(Array.isArray(structured['conversation_turns'])).toBe(true);
-        expect(Array.isArray(structured['knowledge_entities'])).toBe(true);
-      }
+  // -----------------------------------------------------------------------
+  // 6. tools/call nexus.memory_feedback
+  //    Uses capturedRetrieveId from the context_retrieve step above.
+  //    Falls back to PLACEHOLDER_UUID if the prior call returned empty.
+  // -----------------------------------------------------------------------
+
+  it('nexus.memory_feedback: status="accepted" in response', async () => {
+    const result = await client.callTool({
+      name: 'nexus.memory_feedback',
+      arguments: {
+        user_id: TEST_USER_ID,
+        retrieve_id: capturedRetrieveId,
+        rating: 4,
+        expected_missing: 'E2E test: nothing specific missing',
+        context: { source: 'e2e-test', client: 'vitest' },
+      },
     });
 
-    // -----------------------------------------------------------------------
-    // 4. tools/call nexus.memory_search
-    // -----------------------------------------------------------------------
+    expect(result.isError).toBeFalsy();
 
-    it('nexus.memory_search: response contains memories array', async () => {
-      const result = await client.callTool({
-        name: 'nexus.memory_search',
-        arguments: {
-          user_id: TEST_USER_ID,
-          query: 'e2e test memory search',
-          limit: 5,
-          mode: 'hybrid',
-        },
-      });
+    const content = result.content as Array<{ type: string; text?: string }>;
+    expect(content.length).toBeGreaterThanOrEqual(1);
+    expect(content[0]?.type).toBe('text');
 
-      expect(result.isError).toBeFalsy();
+    const parsed = JSON.parse(content[0]!.text!) as Record<string, unknown>;
+    // Backend FeedbackResponse contract: status is always "accepted" (R2.1 D-1).
+    expect(parsed['status']).toBe('accepted');
+    // feedback_id must be present and non-empty.
+    expect(typeof parsed['feedback_id']).toBe('string');
+    expect((parsed['feedback_id'] as string).length).toBeGreaterThan(0);
+  });
 
-      const content = result.content as Array<{ type: string; text?: string }>;
-      expect(content.length).toBeGreaterThanOrEqual(1);
-      expect(content[0]?.type).toBe('text');
-
-      // The text content must be parseable JSON with a `memories` array.
-      const parsed = JSON.parse(content[0]!.text!) as unknown;
-      expect(parsed).toMatchObject({ memories: expect.any(Array), total: expect.any(Number) });
+  it('nexus.memory_feedback: with item_feedback array', async () => {
+    // This test verifies the full item_feedback path including per-memory
+    // useful flag — the feedback loop's core signal (v5.0 L2 explicit).
+    const result = await client.callTool({
+      name: 'nexus.memory_feedback',
+      arguments: {
+        user_id: TEST_USER_ID,
+        retrieve_id: capturedRetrieveId,
+        rating: 3,
+        item_feedback: [
+          {
+            memory_id: PLACEHOLDER_UUID,
+            useful: true,
+            reason: 'Relevant to the E2E test query',
+          },
+        ],
+      },
     });
 
-    it('nexus.memory_search: structuredContent has memories and total', async () => {
-      const result = await client.callTool({
-        name: 'nexus.memory_search',
-        arguments: {
-          user_id: TEST_USER_ID,
-          query: 'structured content check',
-        },
-      });
+    expect(result.isError).toBeFalsy();
 
-      expect(result.isError).toBeFalsy();
+    const content = result.content as Array<{ type: string; text?: string }>;
+    expect(content[0]?.type).toBe('text');
 
-      const structured = (result as unknown as { structuredContent?: unknown }).structuredContent as
-        | Record<string, unknown>
-        | undefined;
+    const parsed = JSON.parse(content[0]!.text!) as Record<string, unknown>;
+    expect(parsed['status']).toBe('accepted');
+  });
 
-      if (structured !== undefined) {
-        expect(structured).toHaveProperty('memories');
-        expect(structured).toHaveProperty('total');
-        expect(Array.isArray(structured['memories'])).toBe(true);
-        expect(typeof structured['total']).toBe('number');
-      }
-    });
+  // -----------------------------------------------------------------------
+  // 7. Error-path: invalid rating → InvalidParams error response
+  // -----------------------------------------------------------------------
 
-    // -----------------------------------------------------------------------
-    // 5. tools/call nexus.memory_create
-    // -----------------------------------------------------------------------
-
-    it('nexus.memory_create: response contains memory_id and created_at', async () => {
-      const result = await client.callTool({
-        name: 'nexus.memory_create',
-        arguments: {
-          user_id: TEST_USER_ID,
-          content: 'E2E integration test memory created at ' + new Date().toISOString(),
-          memory_type: 'episodic',
-          metadata: { source: 'e2e-test', environment: 'ci' },
-        },
-      });
-
-      expect(result.isError).toBeFalsy();
-
-      const content = result.content as Array<{ type: string; text?: string }>;
-      expect(content.length).toBeGreaterThanOrEqual(1);
-      expect(content[0]?.type).toBe('text');
-
-      const parsed = JSON.parse(content[0]!.text!) as Record<string, unknown>;
-      // memory_id is the canonical output field (outputSchema §required).
-      expect(typeof parsed['memory_id']).toBe('string');
-      expect((parsed['memory_id'] as string).length).toBeGreaterThan(0);
-      // created_at must be a non-empty string (ISO 8601 datetime).
-      expect(typeof parsed['created_at']).toBe('string');
-      expect((parsed['created_at'] as string).length).toBeGreaterThan(0);
-    });
-
-    it('nexus.memory_create: structuredContent carries memory_id', async () => {
-      const result = await client.callTool({
-        name: 'nexus.memory_create',
-        arguments: {
-          user_id: TEST_USER_ID,
-          content: 'E2E structured-content assertion ' + new Date().toISOString(),
-          memory_type: 'semantic',
-        },
-      });
-
-      expect(result.isError).toBeFalsy();
-
-      const structured = (result as unknown as { structuredContent?: unknown }).structuredContent as
-        | Record<string, unknown>
-        | undefined;
-
-      if (structured !== undefined) {
-        expect(typeof structured['memory_id']).toBe('string');
-        expect(typeof structured['created_at']).toBe('string');
-      }
-    });
-
-    // -----------------------------------------------------------------------
-    // 6. tools/call nexus.memory_feedback
-    //    Uses capturedRetrieveId from the context_retrieve step above.
-    //    Falls back to PLACEHOLDER_UUID if the prior call returned empty.
-    // -----------------------------------------------------------------------
-
-    it('nexus.memory_feedback: status="accepted" in response', async () => {
+  it('nexus.memory_feedback: rating=0 returns isError=true (InvalidParams)', async () => {
+    // MCP tool errors (NexusError / InvalidParams) surface as isError=true
+    // in the CallToolResult — NOT as a JSON-RPC protocol error. The server
+    // wraps application errors in CallToolResult.isError per MCP spec.
+    // Depending on SDK version this may surface differently; we check
+    // for either an error result or a thrown SDK error.
+    try {
       const result = await client.callTool({
         name: 'nexus.memory_feedback',
         arguments: {
           user_id: TEST_USER_ID,
           retrieve_id: capturedRetrieveId,
-          rating: 4,
-          expected_missing: 'E2E test: nothing specific missing',
-          context: { source: 'e2e-test', client: 'vitest' },
+          rating: 0, // invalid: below minimum of 1
         },
       });
+      // If we reach here, check isError flag.
+      expect(result.isError).toBe(true);
+    } catch (err) {
+      // The SDK may throw an McpError for protocol-level errors.
+      // Either path is acceptable — the test ensures an error is raised.
+      expect(err).toBeTruthy();
+    }
+  });
 
-      expect(result.isError).toBeFalsy();
-
-      const content = result.content as Array<{ type: string; text?: string }>;
-      expect(content.length).toBeGreaterThanOrEqual(1);
-      expect(content[0]?.type).toBe('text');
-
-      const parsed = JSON.parse(content[0]!.text!) as Record<string, unknown>;
-      // Backend FeedbackResponse contract: status is always "accepted" (R2.1 D-1).
-      expect(parsed['status']).toBe('accepted');
-      // feedback_id must be present and non-empty.
-      expect(typeof parsed['feedback_id']).toBe('string');
-      expect((parsed['feedback_id'] as string).length).toBeGreaterThan(0);
-    });
-
-    it('nexus.memory_feedback: with item_feedback array', async () => {
-      // This test verifies the full item_feedback path including per-memory
-      // useful flag — the feedback loop's core signal (v5.0 L2 explicit).
+  it('nexus.context_retrieve: as_of > 90 days in past → isError=true (InvalidParams)', async () => {
+    const longPast = new Date(Date.now() - 100 * 24 * 60 * 60 * 1000).toISOString();
+    try {
       const result = await client.callTool({
-        name: 'nexus.memory_feedback',
+        name: 'nexus.context_retrieve',
         arguments: {
           user_id: TEST_USER_ID,
-          retrieve_id: capturedRetrieveId,
-          rating: 3,
-          item_feedback: [
-            {
-              memory_id: PLACEHOLDER_UUID,
-              useful: true,
-              reason: 'Relevant to the E2E test query',
-            },
-          ],
+          query: 'historical query',
+          as_of: longPast,
         },
       });
+      expect(result.isError).toBe(true);
+    } catch (err) {
+      expect(err).toBeTruthy();
+    }
+  });
 
-      expect(result.isError).toBeFalsy();
+  // -----------------------------------------------------------------------
+  // 8. Unknown tool → protocol error
+  // -----------------------------------------------------------------------
 
-      const content = result.content as Array<{ type: string; text?: string }>;
-      expect(content[0]?.type).toBe('text');
+  it('unknown tool name → client receives an error (protocol-level)', async () => {
+    await expect(
+      client.callTool({
+        name: 'nexus.does_not_exist',
+        arguments: {},
+      }),
+    ).rejects.toThrow();
+  });
 
-      const parsed = JSON.parse(content[0]!.text!) as Record<string, unknown>;
-      expect(parsed['status']).toBe('accepted');
-    });
+  // -----------------------------------------------------------------------
+  // 9. Process cleanup assertion (run last via natural order)
+  // -----------------------------------------------------------------------
 
-    // -----------------------------------------------------------------------
-    // 7. Error-path: invalid rating → InvalidParams error response
-    // -----------------------------------------------------------------------
-
-    it('nexus.memory_feedback: rating=0 returns isError=true (InvalidParams)', async () => {
-      // MCP tool errors (NexusError / InvalidParams) surface as isError=true
-      // in the CallToolResult — NOT as a JSON-RPC protocol error. The server
-      // wraps application errors in CallToolResult.isError per MCP spec.
-      // Depending on SDK version this may surface differently; we check
-      // for either an error result or a thrown SDK error.
-      try {
-        const result = await client.callTool({
-          name: 'nexus.memory_feedback',
-          arguments: {
-            user_id: TEST_USER_ID,
-            retrieve_id: capturedRetrieveId,
-            rating: 0, // invalid: below minimum of 1
-          },
-        });
-        // If we reach here, check isError flag.
-        expect(result.isError).toBe(true);
-      } catch (err) {
-        // The SDK may throw an McpError for protocol-level errors.
-        // Either path is acceptable — the test ensures an error is raised.
-        expect(err).toBeTruthy();
-      }
-    });
-
-    it('nexus.context_retrieve: as_of > 90 days in past → isError=true (InvalidParams)', async () => {
-      const longPast = new Date(Date.now() - 100 * 24 * 60 * 60 * 1000).toISOString();
-      try {
-        const result = await client.callTool({
-          name: 'nexus.context_retrieve',
-          arguments: {
-            user_id: TEST_USER_ID,
-            query: 'historical query',
-            as_of: longPast,
-          },
-        });
-        expect(result.isError).toBe(true);
-      } catch (err) {
-        expect(err).toBeTruthy();
-      }
-    });
-
-    // -----------------------------------------------------------------------
-    // 8. Unknown tool → protocol error
-    // -----------------------------------------------------------------------
-
-    it('unknown tool name → client receives an error (protocol-level)', async () => {
-      await expect(
-        client.callTool({
-          name: 'nexus.does_not_exist',
-          arguments: {},
-        }),
-      ).rejects.toThrow();
-    });
-
-    // -----------------------------------------------------------------------
-    // 9. Process cleanup assertion (run last via natural order)
-    // -----------------------------------------------------------------------
-
-    it('server process is still running at end of suite (no zombie)', () => {
-      // If the server crashed during any test, `killed` would be true or
-      // `exitCode` would be non-null. A healthy server stays alive until
-      // afterAll kills it.
-      expect(serverProcess.killed).toBe(false);
-      expect(serverProcess.exitCode).toBeNull();
-    });
-  },
-);
+  it('server process is still running at end of suite (no zombie)', () => {
+    // If the server crashed during any test, `killed` would be true or
+    // `exitCode` would be non-null. A healthy server stays alive until
+    // afterAll kills it.
+    expect(serverProcess.killed).toBe(false);
+    expect(serverProcess.exitCode).toBeNull();
+  });
+});
 
 // ---------------------------------------------------------------------------
 // Informational describe block — always runs, prints skip reason in CI

@@ -11,7 +11,12 @@
  * finds every redaction check.
  */
 import { describe, it, expect } from 'vitest';
-import { NexusError, McpErrorCode, mapHttpStatusToMcpError, isAxiosLikeError } from '../../src/errors.js';
+import {
+  NexusError,
+  McpErrorCode,
+  mapHttpStatusToMcpError,
+  isAxiosLikeError,
+} from '../../src/errors.js';
 
 const SENTINEL_TOKEN = 'sk-test-SECRET-12345';
 
