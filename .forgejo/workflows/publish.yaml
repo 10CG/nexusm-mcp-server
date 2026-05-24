@@ -1,0 +1,169 @@
+# Nexusm MCP Server — npm publish workflow (US-037 Wave 4 TASK-025)
+#
+# Scope
+# =====
+# Tag-triggered publish to npmjs.com public registry as `@nexusm/mcp-server`.
+# This file is the Wave 4 TASK-025 deliverable (infrastructure). The
+# actual first publish — bumping version 0.0.1 → 0.1.0 + tagging `v0.1.0`
+# + pushing — is TASK-026, gated on Gate-1 (`@nexusm/sdk` published) so
+# `npm ci` resolves at publish time.
+#
+# Trigger contract
+# ================
+# Push of a SemVer-shaped tag (`v<MAJOR>.<MINOR>.<PATCH>`) to any branch.
+# Local pre-release tags (e.g. `v0.1.0-rc.1`) are intentionally NOT matched
+# — pre-release publishes go via dist-tag from a separate manual job.
+#
+# Gates (run sequentially; first failure aborts)
+# ==============================================
+#   1. Tag ↔ package.json version drift guard
+#         Tag `v0.1.0` MUST match `package.json` `version: "0.1.0"`. Mismatch
+#         is a release-process bug and aborts before any npm work.
+#   2. Install + build (same as CI). `npm ci || npm install` mirrors `ci.yml`
+#      pattern so behaviour is identical to PR-time validation.
+#   3. Lint (`npm run lint`). Belt-and-suspenders even though `ci.yml` already
+#      gated this on the merge that produced the tag — the tag may not
+#      correspond to a green main if someone tags a branch directly.
+#   4. Unit tests (`npm run test:unit`). Same rationale as lint.
+#   5. `npm publish --access public`
+#         `@nexusm` is a scoped namespace; `--access public` is REQUIRED on
+#         first publish of a scoped package (npm defaults scoped to private).
+#         For subsequent versions npm remembers, but keeping the flag here
+#         makes the workflow self-documenting and re-runnable after
+#         `npm unpublish` recovery.
+#   6. Registry settle verification (`npm view`). 6× 5s poll for the freshly
+#      published version to appear via the public read API. Catches the rare
+#      case where publish returns 2xx but the version doesn't propagate
+#      (npmjs CDN edge issue; surfaced in prior incidents).
+#
+# Auth
+# ====
+# `NPM_TOKEN` (Forgejo repo secret, configured Wave 0). Granular access
+# token scoped to `@nexusm/*` packages with Publish permission. 90-day max
+# lifetime per npm policy — rotation runbook in RUNBOOK.md §2.
+#
+# Failure handling (post-publish)
+# ===============================
+# - 429 (rate limit) → retry by re-running the workflow (rerun-job)
+# - 401 (token expired) → rotate NPM_TOKEN per RUNBOOK.md §1.2
+# - 403 (namespace) → check @nexusm ownership per RUNBOOK.md §1.3
+# - Bad version shipped → RUNBOOK.md §1.4 (hotfix preferred over unpublish)
+#
+# Why no submodule release-please / changesets automation
+# =======================================================
+# This package is hand-released by the maintainer (US-037c) at SemVer-major
+# boundaries; auto-version-bump tooling would add ceremony without value at
+# current single-maintainer scale. Wave 5+ may revisit if release cadence
+# warrants.
+
+name: publish
+
+on:
+  push:
+    tags:
+      - 'v[0-9]+.[0-9]+.[0-9]+'
+
+# Avoid two concurrent publishes of the same tag (e.g. force-push + retry).
+concurrency:
+  group: publish-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    name: npm publish
+    runs-on: ubuntu-latest
+    container:
+      image: node:20-bookworm
+    permissions:
+      contents: read
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Configure npm registry auth
+        env:
+          NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: |
+          if [ -z "$NPM_TOKEN" ]; then
+            echo "::error::NPM_TOKEN secret is not configured on this repo."
+            echo "::error::Cannot publish without auth. See RUNBOOK.md §1.2."
+            exit 1
+          fi
+          echo "//registry.npmjs.org/:_authToken=${NPM_TOKEN}" > ~/.npmrc
+
+      - name: Validate tag ↔ package.json version match
+        # The tag prefix is `v` (e.g. v0.1.0); package.json has the raw
+        # SemVer (`0.1.0`). Strict equality only — no fuzzy match.
+        shell: bash
+        run: |
+          set -euo pipefail
+          TAG_VERSION="${GITHUB_REF#refs/tags/v}"
+          PKG_VERSION="$(node -p "require('./package.json').version")"
+          if [ "$TAG_VERSION" != "$PKG_VERSION" ]; then
+            echo "::error::Tag v${TAG_VERSION} does not match package.json version ${PKG_VERSION}."
+            echo "::error::Either re-tag matching the package.json, or bump package.json first and re-tag."
+            exit 1
+          fi
+          echo "Tag and package.json agree: ${PKG_VERSION}"
+
+      - name: Install dependencies
+        # Same `npm ci || npm install` pattern as ci.yml — runs against the
+        # tag's committed package-lock.json. By TASK-025 reaches a real
+        # publish, `@nexusm/sdk` is on registry (Gate-1) so `npm ci`
+        # resolves cleanly.
+        run: npm ci || npm install
+
+      - name: Lint
+        run: npm run lint
+
+      - name: Unit tests (pre-publish gate)
+        # vitest.unit.config.ts excludes schema_sync.test.ts (which imports
+        # the real @nexusm/sdk Zod schemas at runtime). Once Gate-1 is
+        # behind us this exclusion can be revisited.
+        run: npm run test:unit
+
+      - name: Build
+        run: npm run build
+
+      - name: Verify dist artefacts present
+        # `files:` in package.json restricts the tarball to dist/** + docs.
+        # Catch the embarrassing "I forgot to commit the built dist" case
+        # before npm publishes an empty package. (We don't gitignore dist;
+        # this is a belt-and-suspenders against a stale dist/ at tag time.)
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -f dist/index.js || { echo "::error::dist/index.js missing — build did not produce expected entry"; exit 1; }
+          test -f dist/index.d.ts || { echo "::error::dist/index.d.ts missing — build did not produce type declarations"; exit 1; }
+
+      - name: Publish to npm
+        # --access public: required on first publish of a scoped package
+        # (npm defaults scoped to private). Idempotent on subsequent
+        # versions but kept as self-documenting flag.
+        # --provenance is intentionally NOT set — Forgejo Actions doesn't
+        # yet issue OIDC tokens compatible with npm provenance. Revisit
+        # when aether-plugin#XX lands OIDC support.
+        env:
+          NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: npm publish --access public
+
+      - name: Verify published version is queryable on registry
+        # npm publish returning 2xx does not guarantee the version appears
+        # via the public read API immediately — CDN edges can lag a few
+        # seconds. Poll up to 30s. Non-fatal warning on miss (don't fail
+        # the workflow just because the CDN hasn't propagated yet).
+        shell: bash
+        run: |
+          set -euo pipefail
+          PKG="$(node -p "require('./package.json').name")"
+          VER="$(node -p "require('./package.json').version")"
+          for i in 1 2 3 4 5 6; do
+            if npm view "${PKG}@${VER}" version >/dev/null 2>&1; then
+              echo "Confirmed: ${PKG}@${VER} is queryable on npmjs.com"
+              exit 0
+            fi
+            echo "Attempt ${i}/6: ${PKG}@${VER} not yet visible — sleeping 5s"
+            sleep 5
+          done
+          echo "::warning::${PKG}@${VER} did not appear via npm view within 30s. Publish reported success — check https://www.npmjs.com/package/${PKG} after a few minutes."
