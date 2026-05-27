@@ -32,7 +32,6 @@
  * 可重录脚本, R2.1 schema 演进时重录 GIF)".
  */
 
-import { spawn } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
@@ -107,10 +106,7 @@ const transport = new StdioClientTransport({
   stderr: 'inherit', // server logs go straight to our stderr for debug
 });
 
-const client = new Client(
-  { name: 'tests-e2e-replay', version: '1.0.0' },
-  { capabilities: {} },
-);
+const client = new Client({ name: 'tests-e2e-replay', version: '1.0.0' }, { capabilities: {} });
 
 const start = Date.now();
 try {

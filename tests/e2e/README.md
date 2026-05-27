@@ -15,6 +15,7 @@ But the **protocol layer** can and should be tested deterministically — these 
 ## Setup
 
 Requires:
+
 - Node 18+ (any LTS)
 - `npx` (bundled with npm)
 - Network access to npmjs.com (for `npx -y @nexusm/mcp-server@0.1.1`)
@@ -61,13 +62,13 @@ MCP_SERVER_PKG=@nexusm/mcp-server@0.2.0 ./replay_1_memory_create.sh
 
 ## Scenario ↔ tool map (per TASK-019 spec)
 
-| # | User intent (paraphrase) | Expected tool | Why |
-|---|--------------------------|---------------|-----|
-| 1 | "Remember I prefer TypeScript strict mode" | `nexus.memory_create` | Cross-session preference persistence |
-| 2 | "What did I say about React hooks?" | `nexus.context_retrieve` | Implicit cross-session recall |
-| 3 | "Show me all my memories about Rust" | `nexus.memory_search` mode=hybrid | Targeted memory-only search |
-| 4 | "That memory wasn't useful" | `nexus.memory_feedback` (rating=1-2) | Negative feedback with prior `retrieve_id` |
-| 5 | "Now let's switch to my work project" | **(no nexus tool)** | Context switch — falls under CLAUDE.md project-level, not cross-session memory |
+| #   | User intent (paraphrase)                   | Expected tool                        | Why                                                                            |
+| --- | ------------------------------------------ | ------------------------------------ | ------------------------------------------------------------------------------ |
+| 1   | "Remember I prefer TypeScript strict mode" | `nexus.memory_create`                | Cross-session preference persistence                                           |
+| 2   | "What did I say about React hooks?"        | `nexus.context_retrieve`             | Implicit cross-session recall                                                  |
+| 3   | "Show me all my memories about Rust"       | `nexus.memory_search` mode=hybrid    | Targeted memory-only search                                                    |
+| 4   | "That memory wasn't useful"                | `nexus.memory_feedback` (rating=1-2) | Negative feedback with prior `retrieve_id`                                     |
+| 5   | "Now let's switch to my work project"      | **(no nexus tool)**                  | Context switch — falls under CLAUDE.md project-level, not cross-session memory |
 
 Scenario 5 is intentionally a **negative case** — the SKILL.md break-tie rule should keep the LLM from invoking any nexus tool. This can't be tested by a deterministic replay script (you can't "assert absence of a tool call" from a CLI that doesn't have an LLM); it's documented here for completeness and exercised manually in each LLM client.
 
