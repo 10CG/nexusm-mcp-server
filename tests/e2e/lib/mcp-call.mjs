@@ -33,6 +33,7 @@
  */
 
 import { spawn } from 'node:child_process';
+import { tmpdir } from 'node:os';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
 import { fileURLToPath } from 'node:url';
@@ -80,9 +81,22 @@ if (missing.length > 0) {
 }
 
 // Transport: stdio (matches .mcp.json default per plugin Wave 3 Phase 1).
+//
+// cwd: when serverCommand=npx, run from os.tmpdir() to avoid npm's
+// local-name-collision lookup. If npx is invoked with cwd inside the
+// package's own source repo (i.e. /path/to/nexusm-mcp-server/...), npm
+// detects the matching `name` in the local package.json and tries to
+// resolve the bin via local node_modules/.bin/ — which doesn't have the
+// symlink (npx -y skips local bin-link creation), so the shell falls
+// through and exits 127 with "sh: 1: nexusm-mcp-server: not found".
+// Running from /tmp sidesteps the entire local-package check.
+// (For MCP_SERVER_SRC=local we already use an absolute `node <distPath>`
+// invocation that's independent of cwd, but setting cwd uniformly keeps
+// behaviour predictable across both code paths.)
 const transport = new StdioClientTransport({
   command: serverCommand,
   args: serverArgs,
+  cwd: tmpdir(),
   env: {
     ...process.env,
     // Strip MCP_SERVER_* env vars from child to avoid driver var leaking
