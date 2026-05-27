@@ -41,7 +41,7 @@ jobs:
 
     steps:
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: https://github.com/actions/checkout@v4
 
       - name: Configure npm registry auth
         # Writes NPM_TOKEN into ~/.npmrc so `npm ci` can read private packages
@@ -159,11 +159,11 @@ jobs:
 
     steps:
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: https://github.com/actions/checkout@v4
 
       - name: Set up Node (macos only — linux uses container image)
         if: ${{ matrix.os == 'macos-latest' }}
-        uses: actions/setup-node@v4
+        uses: https://github.com/actions/setup-node@v4
         with:
           node-version: ${{ matrix.node }}
 
