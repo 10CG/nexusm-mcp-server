@@ -32,7 +32,7 @@ const createMock = vi.fn();
 vi.mock('@nexusm/sdk', () => {
   class NexusClient {
     public readonly memories = { create: createMock };
-    // eslint-disable-next-line @typescript-eslint/no-unused-vars, @typescript-eslint/no-explicit-any
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     constructor(_config: any) {}
   }
   return { NexusClient };
