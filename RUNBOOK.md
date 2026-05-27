@@ -3,8 +3,115 @@
 > **Status**: in place at `packages/nexusm-mcp-server/RUNBOOK.md`; moved into this submodule at Wave 0 close (2026-05-21).
 > **Owner**: 10CG Backend / DevOps
 > **Created**: 2026-05-09 (US-037 Phase B Wave 0)
-> **Last revised**: 2026-05-22 (Wave 1 R1 audit amendments — removed `description-clean` row from §5 until Wave 2 CI matrix expansion)
+> **Last revised**: 2026-05-27 (§0 RELEASE PROCEDURE added — captures all v0.1.0 + v0.1.1 landmines as a single sequential checklist)
 > **Related**: [proposal.md §C-5](https://forgejo.10cg.pub/10CG/nexus/src/branch/main/openspec/changes/us-037-mcp-server-exposure/proposal.md) + [detailed-tasks.yaml TASK-002 / TASK-008](https://forgejo.10cg.pub/10CG/nexus/src/branch/main/openspec/changes/us-037-mcp-server-exposure/detailed-tasks.yaml)
+
+---
+
+## 0. RELEASE PROCEDURE (canonical — follow in order)
+
+> **Why this section exists**: v0.1.0 and v0.1.1 each took 4+ iterations to publish because separate landmines surfaced sequentially. This section consolidates the full procedure with all known landmines inline, so v0.1.2+ is a 5-minute exercise.
+>
+> **Architecture context**: npm publish runs from **a developer's local machine, not from Aether CI runner**. Aether `docs/guides/forgejo-ci-internal-mirror.md` (Aether #137) explicit design goal is "CI 热路径不再有任何跨境请求"; publishing to npmjs.com is cross-border and intentionally not supported on Aether runners. Future: when this package gets mirrored to `github.com/10CG/nexusm-mcp-server`, `.github/workflows/publish.yml` will automate this; until then, follow this manual procedure.
+
+### 0.1 Pre-flight (1 minute)
+
+```bash
+cd /home/dev/nexus/packages/nexusm-mcp-server
+
+# (a) On correct branch + latest main
+git status                         # clean working tree expected
+git log --oneline -1               # match expected release commit
+
+# (b) Version matches intended release
+node -p "require('./package.json').version"   # e.g. 0.1.2
+
+# (c) npm authenticated as `10cg` (NOT a personal account, NOT empty)
+npm whoami                         # MUST return: 10cg
+
+# (d) Node version sane
+node --version                     # ≥ 18 (engines.node in package.json)
+```
+
+**Stop here if any of (a)-(d) fails.** See landmines §0.5.
+
+### 0.2 Install deps + build (60-90s on warm machine)
+
+```bash
+npm ci                             # installs devDeps from lockfile
+                                   # ← required if running from a fresh
+                                   #   checkout / different machine (Landmine D)
+
+npm run build                      # tsc + chmod +x dist/index.js
+ls -la dist/index.js               # MUST show -rwxr-xr-x (execute bit set)
+                                   # ← without +x, npx exec fails on
+                                   #   downstream users (Landmine F)
+ls dist/index.d.ts                 # MUST exist (TS type declarations)
+```
+
+### 0.3 Local publish (interactive, ~30s plus 2FA web auth)
+
+```bash
+npm publish
+```
+
+**Expected output**:
+
+```
+npm notice 📦  @nexusm/mcp-server@<X.Y.Z>
+npm notice ... (tarball with 44+ files including dist/**)
+npm notice total files: 44                  ← MUST be 40+ not 4
+                                            ← if 4, dist/ wasn't built — re-do §0.2
+Authenticate your account at:
+https://www.npmjs.com/auth/cli/<uuid>
+Press ENTER to open in the browser...       ← first-publish or expired session
++ @nexusm/mcp-server@<X.Y.Z>
+```
+
+If browser-auth prompt appears:
+1. Press ENTER (browser opens)
+2. Bitwarden auto-fills passkey
+3. Click "Sign in" → "Allow"
+4. Terminal completes publish
+
+### 0.4 Verify (30s)
+
+```bash
+# Registry visibility (HTTP 200 means published)
+curl -sI --max-time 8 "https://registry.npmjs.org/@nexusm/mcp-server/<X.Y.Z>" | head -1
+
+# Latest tag pointer (should match what you just published)
+curl -s --max-time 8 "https://registry.npmjs.org/@nexusm/mcp-server/latest" \
+  | python3 -c "import sys,json;print('latest:',json.load(sys.stdin).get('version'))"
+
+# End-to-end smoke: npx must launch the server (catches Landmine F regressions)
+npx -y @nexusm/mcp-server@<X.Y.Z> --version 2>&1 || \
+  npx -y @nexusm/mcp-server@<X.Y.Z> < /dev/null   # stdio server, exit immediately
+                                                  # MUST NOT show
+                                                  # `sh: nexusm-mcp-server: not found`
+```
+
+### 0.5 Landmines (recognized so far — each has ≥ 1 prior victim)
+
+| # | Symptom | Root cause | Fix | Memory |
+|---|---------|-----------|-----|--------|
+| **A** | `E402 Payment Required - You must sign up for private packages` | First publish of new scoped package without `--access public` | Add `publishConfig.access=public` to `package.json` (already done); or pass `--access public` on CLI | [[feedback_npm_granular_token_org_scope]] |
+| **B** | `E403 Forbidden - Two-factor authentication ... required to publish packages` | Account has no 2FA configured | Set up account 2FA via Bitwarden passkey on npmjs.com → Settings → Two-Factor Auth | [[feedback_npm_granular_token_org_scope]] |
+| **C** | `E404 Not Found - PUT registry.npmjs.org/@nexusm%2f<pkg>` + `npm whoami` returns expected user | Session token from a different package's web-auth lacks first-publish rights on new package | `npm logout && npm login` to mint fresh session | [[feedback_npm_first_publish_session_token]] |
+| **D** | `Tarball Details: total files: 4`, only LICENSE/README/RUNBOOK/package.json | `npm ci` not run on this machine → tsup/tsc missing → `prepublishOnly` `npm run build` silently fails → empty dist | Run `npm ci` first; verify `ls dist/index.js` before re-publishing | 本 RUNBOOK §0.2 |
+| **E** | `code ENEEDAUTH` after tarball assembly | Local `~/.npmrc` has no `_authToken` (fresh machine) | `npm login` on this machine; or copy `~/.npmrc` from previously-logged-in machine | 本 RUNBOOK §0.3 |
+| **F** | After publish, `npx -y @nexusm/mcp-server@<ver>` fails with `sh: nexusm-mcp-server: not found` | `dist/index.js` published without execute bit (`-rw-r--r--` instead of `-rwxr-xr-x`) | `package.json` `"build": "tsc && chmod +x dist/index.js"` (already done); verify `ls -la dist/index.js` shows `-rwxr-xr-x` before publish | 本 RUNBOOK §0.2 |
+| **G** | `ENEEDAUTH against http://192.168.69.206:4873` (Aether Verdaccio) | Tried to publish from Aether runner — wrong fit | Publish from local dev machine, NOT Aether runner. See top of §0 for architecture context | [[feedback_align_with_platform_arch_not_workaround]] |
+| **H** | `EIDLETIMEOUT for host registry.npmjs.org` during `npm ci` | Tried to do `npm ci` from Aether runner — cross-border outbound unoptimized | Same as G: do this from local dev, not Aether | [[feedback_align_with_platform_arch_not_workaround]] |
+| **I** | `ERESOLVE` on eslint peer dep | Lockfile drift between package.json and lockfile, OR peer dep mismatch (eslint@9 with `@typescript-eslint/parser@^7`) | Sync versions in package.json; re-run `npm install` to regenerate lockfile; commit lockfile | 本 RUNBOOK §0.2 |
+
+### 0.6 Quarterly re-verification (every 90 days)
+
+NPM_TOKEN rotation per §2 below. After rotation, run §0.1-§0.4 once on a small patch release (e.g. metadata-only bump) to confirm the new token works end-to-end. **Do NOT defer this verification to a real release** — fresh tokens have caught rejection at publish time before, and an emergency release is the wrong moment to debug auth.
+
+### 0.7 Future automation
+
+When `nexusm-mcp-server` gets mirrored to `github.com/10CG/nexusm-mcp-server` (tracked as FU-MCP-SERVER-GITHUB-MIRROR in nexus phase-d-archive-checklist.md §12.B), `.github/workflows/publish.yml` on the mirror will automate §0.2-§0.4 on tag push. Until then, this section is the canonical path.
 
 ---
 
