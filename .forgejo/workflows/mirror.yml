@@ -72,5 +72,15 @@ jobs:
           git remote add github \
             "https://x-access-token:${GH_PAT}@github.com/10CG/nexusm-mcp-server.git"
 
-          git push github main --force
+          # Push main using the remote-tracking ref (refs/remotes/origin/main)
+          # rather than the local branch ref. When this workflow is triggered
+          # by a tag push, actions/checkout@v4 produces a detached HEAD at the
+          # tag and DOES NOT create a local `refs/heads/main` — so the more
+          # natural `git push github main --force` would fail with
+          # `src refspec main does not match any`. The remote-tracking ref is
+          # always present after `fetch-depth: 0` regardless of trigger, so
+          # this form works for both push-to-main and tag-push triggers.
+          # (Without this, tag-triggered runs always fail and rely on the
+          # hourly cron run to ship the tag — wasted runner time + noisy logs.)
+          git push github refs/remotes/origin/main:refs/heads/main --force
           git push github --tags --force
