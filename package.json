@@ -23,7 +23,11 @@
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "https://forgejo.10cg.pub/10CG/nexusm-mcp-server"
+    "url": "git+https://github.com/10CG/nexusm-mcp-server.git"
+  },
+  "homepage": "https://github.com/10CG/nexusm-mcp-server#readme",
+  "bugs": {
+    "url": "https://forgejo.10cg.pub/10CG/nexusm-mcp-server/issues"
   },
   "scripts": {
     "build": "tsc && chmod +x dist/index.js",
