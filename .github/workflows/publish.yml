@@ -1,0 +1,130 @@
+# Publish `@nexusm/mcp-server` to npmjs.com on tag push.
+#
+# Runs on the GitHub mirror (`10CG/nexusm-mcp-server`), not on the Forgejo
+# canonical, because npm publish is cross-border and Aether CI runners
+# intentionally don't run cross-border traffic. The Forgejo `mirror.yml`
+# pushes tags here; this workflow does the publish.
+#
+# Triggered by:
+#   - push of any tag matching `v*` (e.g. `v0.1.2`)
+#   - workflow_dispatch (manual rerun if a publish failed mid-flight)
+#
+# Required secret on this GitHub repo: `NPM_TOKEN` — npm Automation Token
+# (Settings → Access Tokens → "Automation" type, 90d max lifetime).
+# Granular tokens scoped to `@nexusm` org R+W also work.
+#
+# Landmines this workflow guards against (see RUNBOOK.md §0.5):
+#   A: scoped first-publish → `--access public` (also set in package.json
+#      `publishConfig.access`, but pass on CLI as belt-and-suspenders)
+#   D: `dist/` empty → explicit `npm ci` + `npm run build` + file count check
+#   F: missing execute bit on dist/index.js → verify -rwxr-xr-x before publish
+#   I: lockfile drift → `npm ci` fails loud, that's intentional
+
+name: publish
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Tag to republish (e.g. v0.1.2) — use only to retry a failed publish'
+        required: true
+
+permissions:
+  contents: read
+  id-token: write  # required for npm provenance attestation (--provenance)
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout tag
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.inputs.tag || github.ref }}
+          fetch-depth: 0
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          registry-url: 'https://registry.npmjs.org'
+          scope: '@nexusm'
+          always-auth: true
+
+      - name: Verify tag matches package.json version
+        # Prevents accidental publish of a stale version when the tag was
+        # created on a commit that didn't bump package.json. Without this
+        # guard, `npm publish` would publish whatever version is in
+        # package.json (not the tag), which is surprising and hard to debug.
+        run: |
+          set -euo pipefail
+          PKG_VER=$(node -p "require('./package.json').version")
+          REF="${{ github.event.inputs.tag || github.ref_name }}"
+          TAG_VER="${REF#v}"
+          echo "package.json version: $PKG_VER"
+          echo "tag version:          $TAG_VER"
+          if [ "$PKG_VER" != "$TAG_VER" ]; then
+            echo "::error::Tag $REF does not match package.json version $PKG_VER"
+            exit 1
+          fi
+
+      - name: Install dependencies
+        # `npm ci` reads package-lock.json strictly; fails loud on drift
+        # (Landmine I). Do NOT replace with `npm install` to silently fix
+        # lockfile mismatches.
+        run: npm ci
+
+      - name: Build
+        # `tsc && chmod +x dist/index.js` per package.json. The chmod is
+        # critical: without it, downstream `npx -y @nexusm/mcp-server`
+        # exec'd via /bin/sh fails with `sh: nexusm-mcp-server: not found`
+        # (Landmine F).
+        run: npm run build
+
+      - name: Verify dist/ contents
+        # Catches Landmine D (empty dist tarball) and Landmine F (missing
+        # execute bit) before publish — much cheaper than republishing.
+        run: |
+          set -euo pipefail
+          if [ ! -f dist/index.js ]; then
+            echo "::error::dist/index.js missing — build failed silently?"
+            exit 1
+          fi
+          if [ ! -x dist/index.js ]; then
+            echo "::error::dist/index.js missing execute bit (Landmine F)"
+            ls -la dist/index.js
+            exit 1
+          fi
+          if [ ! -f dist/index.d.ts ]; then
+            echo "::error::dist/index.d.ts missing — TypeScript declarations not emitted"
+            exit 1
+          fi
+          echo "dist/ OK:"
+          ls -la dist/
+
+      - name: Publish to npm
+        # `--access public` belt-and-suspenders for first publish of any
+        # new scoped subpath (Landmine A); `--provenance` adds Sigstore
+        # attestation, requires id-token: write permission above.
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: npm publish --access public --provenance
+
+      - name: Verify registry visibility
+        run: |
+          set -euo pipefail
+          VER=$(node -p "require('./package.json').version")
+          # registry CDN may take a few seconds to propagate; retry up to 5x
+          for i in 1 2 3 4 5; do
+            CODE=$(curl -sI --max-time 8 "https://registry.npmjs.org/@nexusm/mcp-server/${VER}" | head -1 | awk '{print $2}')
+            if [ "$CODE" = "200" ]; then
+              echo "@nexusm/mcp-server@${VER} live on registry."
+              exit 0
+            fi
+            echo "Attempt $i: HTTP $CODE — retrying in 5s"
+            sleep 5
+          done
+          echo "::error::registry returned non-200 for @nexusm/mcp-server@${VER} after 5 attempts"
+          exit 1
