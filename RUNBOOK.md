@@ -10,9 +10,53 @@
 
 ## 0. RELEASE PROCEDURE (canonical — follow in order)
 
-> **Why this section exists**: v0.1.0 and v0.1.1 each took 4+ iterations to publish because separate landmines surfaced sequentially. This section consolidates the full procedure with all known landmines inline, so v0.1.2+ is a 5-minute exercise.
+> **⚡ PRIMARY PATH IS NOW AUTOMATED (since 2026-05-29, FU-MCP-SERVER-GITHUB-MIRROR closed).** Releases publish via **GitHub Actions** on the `github.com/10CG/nexusm-mcp-server` mirror. You do **not** run `npm publish` by hand anymore. See **§0.A Automated release (primary)** below. The manual local-CLI procedure (§0.1–§0.6) is retained as a **fallback** for when GitHub Actions is unavailable.
 >
-> **Architecture context**: npm publish runs from **a developer's local machine, not from Aether CI runner**. Aether `docs/guides/forgejo-ci-internal-mirror.md` (Aether #137) explicit design goal is "CI 热路径不再有任何跨境请求"; publishing to npmjs.com is cross-border and intentionally not supported on Aether runners. Future: when this package gets mirrored to `github.com/10CG/nexusm-mcp-server`, `.github/workflows/publish.yml` will automate this; until then, follow this manual procedure.
+> **Why the manual section still exists**: v0.1.0 and v0.1.1 each took 4+ iterations to publish because separate landmines surfaced sequentially. The landmine checklist below stays useful as a fallback and as the canonical record of npm publish gotchas (the GitHub Actions workflow encodes guards for the same landmines).
+>
+> **Architecture context**: npm publish is cross-border and intentionally **not** run on Aether CI runners (Aether `docs/guides/forgejo-ci-internal-mirror.md` #137 design goal "CI 热路径不再有任何跨境请求"). The GitHub Actions mirror runs the publish on GitHub's own infra, which is cross-border-OK by design.
+
+### 0.A Automated release (PRIMARY — use this)
+
+Releases are published by `.github/workflows/publish.yml` on the GitHub mirror, triggered by a `v*` tag. Forgejo's native Push Mirror (Repo Settings → Mirroring) syncs `main` + tags to GitHub at ms-latency.
+
+**Procedure (≈3 min of human work, rest is automated):**
+
+```bash
+cd /home/dev/nexus/packages/nexusm-mcp-server
+
+# 1. Bump version in package.json (+ package-lock.json if present) + CHANGELOG.
+# 2. Open a PR, merge to main. (Push Mirror auto-syncs main → GitHub.)
+
+# 3. Tag the merge commit and push:
+git checkout main && git pull --ff-only
+git tag -a vX.Y.Z -m "vX.Y.Z — <summary>" <merge-sha>
+git push origin vX.Y.Z
+
+# 4. Tag reaches GitHub via Push Mirror (seconds) → triggers publish.yml:
+#      https://github.com/10CG/nexusm-mcp-server/actions
+
+# 5. Verify (workflow also self-verifies):
+curl -sI --max-time 8 "https://registry.npmjs.org/@nexusm/mcp-server/X.Y.Z" | head -1   # 200
+npx -y @nexusm/mcp-server@X.Y.Z < /dev/null   # from /tmp, NOT source dir — see §0.5 Landmine
+```
+
+**What the workflow guards (mirrors §0.5 landmines):**
+
+| Guard | Landmine |
+|-------|----------|
+| tag/package.json version equality check | mismatched tag vs version |
+| `npm ci` (strict lockfile) | D / I |
+| `npm run build` + `dist/index.js` presence + **execute-bit** (`-x`) check | D + **F** (chmod — critical for this CLI package) |
+| `npm publish --access public` | A |
+| `--provenance` (+ `id-token: write`) | supply-chain attestation (needs `repository.url` → GitHub mirror) |
+| registry curl retry × 5 | CDN propagation |
+
+**Requirements on the GitHub mirror** (one-time, already configured): `NPM_TOKEN` secret = npm Granular Token with **Packages-and-scopes → Read and write** on the `@nexusm` scope + **Bypass 2FA** (NOT Organizations-tier R+W — that does not grant publish). `package.json` `repository.url` points to the GitHub mirror (preemptively fixed in mcp-server PR #18 for provenance).
+
+---
+
+> **§0.1–§0.6 below = FALLBACK manual procedure.** Use only if GitHub Actions is down or you must publish out-of-band.
 
 ### 0.1 Pre-flight (1 minute)
 
@@ -107,11 +151,11 @@ npx -y @nexusm/mcp-server@<X.Y.Z> --version 2>&1 || \
 
 ### 0.6 Quarterly re-verification (every 90 days)
 
-NPM_TOKEN rotation per §2 below. After rotation, run §0.1-§0.4 once on a small patch release (e.g. metadata-only bump) to confirm the new token works end-to-end. **Do NOT defer this verification to a real release** — fresh tokens have caught rejection at publish time before, and an emergency release is the wrong moment to debug auth.
+The `NPM_TOKEN` used by the automated pipeline now lives as a secret on the **GitHub mirror** (`github.com/10CG/nexusm-mcp-server` → Settings → Secrets → Actions). It is a npm Granular Token (Packages-and-scopes R+W on `@nexusm`, Bypass 2FA) with a 90-day max lifetime — put it on a quarterly rotation. After rotating, cut a trivial patch release (or re-run the latest `publish` workflow via workflow_dispatch) to confirm the new token works end-to-end. **Do NOT defer this verification to a real release** — fresh tokens have caught rejection at publish time before, and an emergency release is the wrong moment to debug auth. (The legacy Forgejo `NPM_TOKEN`/`GH_PAT` Actions secrets were revoked when the custom mirror.yml was deleted — Push Mirror manages its own credentials.)
 
-### 0.7 Future automation
+### 0.7 Active automation (PRIMARY path — see §0.A)
 
-When `nexusm-mcp-server` gets mirrored to `github.com/10CG/nexusm-mcp-server` (tracked as FU-MCP-SERVER-GITHUB-MIRROR in nexus phase-d-archive-checklist.md §12.B), `.github/workflows/publish.yml` on the mirror will automate §0.2-§0.4 on tag push. Until then, this section is the canonical path.
+✅ **Done 2026-05-29** (FU-MCP-SERVER-GITHUB-MIRROR + FU-MIRROR-PLATFORM-NATIVE-PUSH closed). `nexusm-mcp-server` is mirrored to `github.com/10CG/nexusm-mcp-server` via **Forgejo native Push Mirror** (replaced the earlier custom `.forgejo/workflows/mirror.yml`, which was deleted). `.github/workflows/publish.yml` on the mirror auto-publishes on `v*` tag push. **§0.A is now the primary release path**; §0.1–§0.6 are the manual fallback. (The SDK sibling validated the pipeline first with `@nexusm/sdk@1.3.3`; mcp-server's next release — e.g. `0.1.2` — will be its first through the pipeline.)
 
 ---
 
