@@ -59,33 +59,21 @@ const { NexusError, McpErrorCode } = await import('../../../src/errors.js');
 // Helpers
 // -----------------------------------------------------------------------
 
+// SDK 2.0.0 (ADR-003): flat-array canonical shape — profile/history/graph are
+// flat arrays (not nested {memories,...}); meta removed (total_latency_ms);
+// element keys memory_id/similarity_score/entity_id/type.
 const HAPPY_RESPONSE = {
   retrieve_id: '11111111-2222-3333-4444-555555555555',
-  profile: {
-    memories: [
-      {
-        id: 'm1',
-        content: 'likes tea',
-        memory_type: 'semantic',
-        created_at: '2026-05-01T00:00:00Z',
-      },
-      {
-        id: 'm2',
-        content: 'prefers Vim',
-        memory_type: 'semantic',
-        created_at: '2026-05-02T00:00:00Z',
-      },
-    ],
-    total_count: 2,
-  },
-  history: {
-    messages: [{ role: 'user', content: 'hi', created_at: '2026-05-10T00:00:00Z' }],
-  },
-  graph: {
-    entities: [{ id: 'e1', name: 'Acme', entity_type: 'Organization' }],
-    relations: [],
-  },
-  meta: { took_ms: 42 },
+  profile: [
+    { memory_id: 'm1', content: 'likes tea', memory_type: 'semantic', similarity_score: 0.9 },
+    { memory_id: 'm2', content: 'prefers Vim', memory_type: 'semantic', similarity_score: 0.85 },
+  ],
+  history: [
+    { message_id: 'msg1', role: 'user', content: 'hi', created_at: '2026-05-10T00:00:00Z' },
+  ],
+  graph: [{ entity_id: 'e1', name: 'Acme', type: 'Organization' }],
+  retrieved_at: '2026-05-10T00:00:00Z',
+  total_latency_ms: 42,
   errors: null,
 };
 
@@ -144,7 +132,7 @@ describe('nexus.context_retrieve — partial degradation (R2 M-3)', () => {
   it('passes errors dict through and populates _warnings; isError stays false (case 2)', async () => {
     retrieveSpy.mockResolvedValue({
       ...HAPPY_RESPONSE,
-      graph: { entities: [], relations: [] },
+      graph: [],
       errors: { graph: 'timeout connecting to GraphRAG' },
     });
 
