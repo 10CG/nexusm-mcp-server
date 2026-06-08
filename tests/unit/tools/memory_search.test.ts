@@ -23,7 +23,11 @@ import { McpErrorCode, NexusError } from '../../../src/errors.js';
 // hoisted vi.mock factory (vitest hoists vi.mock calls above imports,
 // and only `vi.hoisted`-wrapped values are guaranteed to coexist).
 const { searchSpy } = vi.hoisted(() => ({
-  searchSpy: vi.fn<[unknown], Promise<{ results: unknown[]; query: string; took_ms: number }>>(),
+  // SDK 2.0.0 (ADR-003): MemorySearchResult = { results: SearchResult[], query, total_found, search_time_ms }
+  searchSpy: vi.fn<
+    [unknown],
+    Promise<{ results: unknown[]; query: string; total_found: number; search_time_ms: number }>
+  >(),
 }));
 
 vi.mock('@nexusm/sdk', () => {
@@ -50,7 +54,7 @@ const { memorySearchTool, __resetClientForTesting } =
 
 beforeEach(() => {
   searchSpy.mockReset();
-  searchSpy.mockResolvedValue({ results: [], query: 'q', took_ms: 1 });
+  searchSpy.mockResolvedValue({ results: [], query: 'q', total_found: 0, search_time_ms: 1 });
   __resetClientForTesting();
 });
 

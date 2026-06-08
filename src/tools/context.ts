@@ -42,20 +42,10 @@ const AS_OF_MAX_AGE_MS = 90 * 24 * 60 * 60 * 1000;
  *  test case 5). */
 const ISO_8601_WITH_TZ = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})$/;
 
-/**
- * Backend response shape we actually rely on. The SDK's
- * `ContextRetrieveResponse` type does not expose `retrieve_id` or `errors`
- * (SDK type-level gap — fields are present at runtime since HTTP layer just
- * casts the JSON). We narrow with a structural type rather than reaching
- * into SDK internals.
- *
- * If/when the SDK adds these fields to its public type, this local alias
- * can be removed in favour of the SDK type directly.
- */
-type BackendContextResponse = ContextRetrieveResponse & {
-  retrieve_id?: string;
-  errors?: Record<string, string> | null;
-};
+// SDK 2.0.0 (ADR-003): `ContextRetrieveResponse` is now the backend flat-array
+// canonical shape and exposes `retrieve_id`/`errors` directly, so the former
+// `BackendContextResponse` narrowing alias (TASK-006) is deleted — we use the
+// SDK type directly.
 
 /** Validate that `as_of` (if present) is ISO 8601 *with* timezone and not
  *  more than 90 days in the past. Throws a `NexusError(InvalidParams)` on
@@ -149,10 +139,11 @@ function buildBanner(retrieveId: string, summary: string): string {
   return `## Retrieved context (retrieve_id=${retrieveId})\n${summary}`;
 }
 
-function summarise(resp: BackendContextResponse): string {
-  const memCount = resp.profile?.memories?.length ?? 0;
-  const histCount = resp.history?.messages?.length ?? 0;
-  const entCount = resp.graph?.entities?.length ?? 0;
+function summarise(resp: ContextRetrieveResponse): string {
+  // SDK 2.0.0 (ADR-003): profile/history/graph are flat arrays (not nested containers).
+  const memCount = resp.profile?.length ?? 0;
+  const histCount = resp.history?.length ?? 0;
+  const entCount = resp.graph?.length ?? 0;
   return `memories=${memCount}, conversation_turns=${histCount}, knowledge_entities=${entCount}`;
 }
 
@@ -181,9 +172,9 @@ async function handler(args: Record<string, unknown>): Promise<CallToolResult> {
   if (asOf !== undefined) sdkRequest.as_of = asOf;
 
   // ---- Call SDK; translate errors to NexusError using TASK-013 mapping ---
-  let resp: BackendContextResponse;
+  let resp: ContextRetrieveResponse;
   try {
-    resp = (await getClient().context.retrieve(sdkRequest)) as BackendContextResponse;
+    resp = await getClient().context.retrieve(sdkRequest);
   } catch (err) {
     // Re-throw NexusError unchanged (already translated, e.g. from validateAsOf).
     if (err instanceof NexusError) throw err;
@@ -201,10 +192,11 @@ async function handler(args: Record<string, unknown>): Promise<CallToolResult> {
   }
 
   // ---- Map SDK response → MCP outputSchema shape ----------------------
+  // SDK 2.0.0 (ADR-003): profile/history/graph are flat arrays; pass elements through.
   const retrieveId = resp.retrieve_id ?? '';
-  const memories = resp.profile?.memories ?? [];
-  const conversationTurns = resp.history?.messages ?? [];
-  const knowledgeEntities = resp.graph?.entities ?? [];
+  const memories = resp.profile ?? [];
+  const conversationTurns = resp.history ?? [];
+  const knowledgeEntities = resp.graph ?? [];
   const errors = resp.errors ?? null;
 
   // R2 M-3 partial-degradation warning channel
