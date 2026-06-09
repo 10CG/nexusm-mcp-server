@@ -21,6 +21,8 @@
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
+import type { ContextRetrieveResponse } from '@nexusm/sdk';
+
 // -- SDK mock -------------------------------------------------------------
 // Vitest hoists vi.mock to the top of the file, so we cannot reference any
 // in-scope variables from the factory. Instead, the mock exposes a captured
@@ -62,7 +64,7 @@ const { NexusError, McpErrorCode } = await import('../../../src/errors.js');
 // SDK 2.0.0 (ADR-003): flat-array canonical shape — profile/history/graph are
 // flat arrays (not nested {memories,...}); meta removed (total_latency_ms);
 // element keys memory_id/similarity_score/entity_id/type.
-const HAPPY_RESPONSE = {
+const HAPPY_RESPONSE: ContextRetrieveResponse = {
   retrieve_id: '11111111-2222-3333-4444-555555555555',
   profile: [
     { memory_id: 'm1', content: 'likes tea', memory_type: 'semantic', similarity_score: 0.9 },

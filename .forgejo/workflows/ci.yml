@@ -68,7 +68,17 @@ jobs:
       - name: Lint
         run: npm run lint
 
-      - name: Type check + build
+      - name: Type check (src + tests)
+        # mcp #25 (contract-recon TASK-009 audit Important #2): `npm run build`
+        # only type-checks src/ (tsconfig.json excludes tests/). This step runs
+        # tsconfig.typecheck.json (noEmit, includes src + tests) so that test
+        # fixtures annotated against SDK types — e.g. HAPPY_RESPONSE:
+        # ContextRetrieveResponse in tests/unit/tools/context.test.ts — become
+        # live compile-time locks against SDK contract regressions (a nested
+        # profile shape now fails here). Without it the annotation is vacuous.
+        run: npm run type-check
+
+      - name: Build
         run: npm run build
 
       - name: Audit-marker scan in tool descriptions

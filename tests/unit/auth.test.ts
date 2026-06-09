@@ -9,7 +9,7 @@
  *   5. AuthConfig export shape — exported config has the 3 expected fields with string types
  */
 
-import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach, type MockInstance } from 'vitest';
 import type { AuthConfig, AuthIO } from '../../src/auth.js';
 import { loadAuthConfig } from '../../src/auth.js';
 
@@ -52,7 +52,7 @@ function makeIO(): {
 }
 
 // Spy on real stdout to catch any accidental writes from the module under test.
-let stdoutSpy: ReturnType<typeof vi.spyOn>;
+let stdoutSpy: MockInstance;
 let realStdoutChunks: string[];
 
 beforeEach(() => {

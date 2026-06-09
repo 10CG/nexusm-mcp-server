@@ -123,7 +123,7 @@ describe('nexus.memory_create ↔ memoryCreateSchema', () => {
       expect.arrayContaining(['user_id', 'content']),
     );
     for (const field of ['user_id', 'content']) {
-      const payload = {
+      const payload: Record<string, unknown> = {
         ...buildMinimalPayload(memoryCreateTool.inputSchema),
         content: 'sample content',
       };

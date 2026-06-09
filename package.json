@@ -31,6 +31,7 @@
   },
   "scripts": {
     "build": "tsc && chmod +x dist/index.js",
+    "type-check": "tsc -p tsconfig.typecheck.json",
     "test": "vitest run",
     "test:unit": "vitest run --config vitest.unit.config.ts",
     "test:watch": "vitest",

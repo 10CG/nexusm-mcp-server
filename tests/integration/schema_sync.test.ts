@@ -318,7 +318,7 @@ describe('integration: nexus.memory_create ↔ memoryCreateSchema (field-by-fiel
   });
 
   it('SDK Zod rejects payload missing user_id', () => {
-    const payload = {
+    const payload: Record<string, unknown> = {
       ...buildMinimalPayload(memoryCreateTool.inputSchema),
       content: 'test',
     };
