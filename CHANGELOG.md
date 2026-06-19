@@ -9,6 +9,8 @@ Versions follow [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.1.2] — 2026-06-19
+
 ### Fixed
 
 - **stdio metrics opt-in**: `main()` in `src/index.ts` no longer starts the
