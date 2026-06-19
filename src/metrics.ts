@@ -237,9 +237,39 @@ export function setDescriptionHash(hash: string): void {
  *      opted in (NEXUS_METRICS_PORT set, or HTTP transport mode).
  *   2. If listen() fails (e.g. EADDRINUSE), this function logs a warning and
  *      resolves — it never rejects or throws — so the MCP transport continues.
+ *
+ * Returns the listening http.Server on success, or null when metrics could not
+ * start (invalid port or listen error). The handle lets callers/tests close it.
  */
-export async function startMetricsServer(): Promise<void> {
-  const port = Number.parseInt(process.env.NEXUS_METRICS_PORT ?? '9090', 10);
+
+/**
+ * Single source of truth for the metrics opt-in decision — imported by both
+ * main() in index.ts and the unit tests so the predicate cannot drift.
+ *
+ * Metrics is a server-side scrape surface; local stdio clients (Claude Code /
+ * Cursor / Windsurf) have no scraper, so it is OFF by default and enabled only
+ * when EXPLICITLY requested:
+ *   - NEXUS_METRICS_PORT is set (explicit opt-in regardless of transport), or
+ *   - transport mode is 'http' (server-side deployment always wants metrics).
+ */
+export function shouldEnableMetrics(
+  transportMode: string,
+  env: NodeJS.ProcessEnv = process.env,
+): boolean {
+  return env.NEXUS_METRICS_PORT !== undefined || transportMode === 'http';
+}
+
+export async function startMetricsServer(): Promise<http.Server | null> {
+  const rawPort = process.env.NEXUS_METRICS_PORT ?? '9090';
+  const port = Number.parseInt(rawPort, 10);
+  // Validate: a non-numeric NEXUS_METRICS_PORT would otherwise coerce to NaN →
+  // server.listen(NaN) silently binds an OS-assigned ephemeral port (a footgun).
+  if (!Number.isInteger(port) || port < 0 || port > 65535) {
+    console.error(
+      `nexusm-mcp-server metrics: invalid NEXUS_METRICS_PORT="${rawPort}" — metrics disabled, MCP transport unaffected`,
+    );
+    return null;
+  }
 
   const server = http.createServer(async (req, res) => {
     if (req.method === 'GET' && req.url === '/metrics') {
@@ -259,21 +289,21 @@ export async function startMetricsServer(): Promise<void> {
     }
   });
 
-  await new Promise<void>((resolve) => {
+  return new Promise<http.Server | null>((resolve) => {
     // Defensive: if the port is already in use (EADDRINUSE) or any other
-    // listen error occurs, log a warning and resolve so main() can continue
-    // starting the MCP transport.  Metrics are auxiliary — they must never
-    // crash or block the primary MCP process.
+    // listen error occurs, log a warning and resolve(null) so main() can
+    // continue starting the MCP transport.  Metrics are auxiliary — they must
+    // never crash or block the primary MCP process.
     server.on('error', (err: NodeJS.ErrnoException) => {
       console.error(
         `nexusm-mcp-server metrics server failed to start on port ${port} (${err.code ?? err.message}) — metrics disabled, MCP transport unaffected`,
       );
-      resolve();
+      resolve(null);
     });
 
     server.listen(port, () => {
       console.error(`nexusm-mcp-server metrics listening on http://0.0.0.0:${port}/metrics`);
-      resolve();
+      resolve(server);
     });
   });
 }

@@ -23,10 +23,25 @@ Versions follow [Semantic Versioning](https://semver.org/).
 - **defensive metrics listen**: `startMetricsServer()` in `src/metrics.ts` now
   attaches an `'error'` listener to the HTTP server before calling `listen()`.
   If the port is already in use (`EADDRINUSE`) or any other bind error occurs,
-  the function logs a `console.error` warning and **resolves** instead of
+  the function logs a `console.error` warning and **resolves `null`** instead of
   letting the error propagate as an unhandled event that would crash the
   process.  Metrics are auxiliary — they must never crash or block the MCP
-  transport.
+  transport.  A non-numeric `NEXUS_METRICS_PORT` is also rejected up front
+  (previously coerced to `NaN` → silent ephemeral-port bind).
+
+### Changed
+
+- `startMetricsServer()` returns the listening `http.Server` (or `null` on
+  skip/failure) so callers and tests can close the listener.
+- The opt-in predicate is now the exported `shouldEnableMetrics(transportMode,
+  env)` — a single source of truth imported by both `main()` and the unit tests
+  so the decision cannot drift between code and tests.
+
+> Follow-up (FU-MCP-METRICS-FAILLOUD, non-blocking): when metrics are
+> *explicitly* opted in (server-side), a bind failure currently warns + resolves
+> identically to the stdio auto-skip path. For a scraped server that is a silent
+> observability gap; revisit escalating the signal once HTTP transport is no
+> longer scaffold-only.
 
 ---
 

@@ -31,7 +31,13 @@ import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js'
 import { CallToolRequestSchema, ListToolsRequestSchema } from '@modelcontextprotocol/sdk/types.js';
 
 import { tools, toolsByName } from './tools/index.js';
-import { startMetricsServer, emitToolCall, emitToolDuration, emitToolsList } from './metrics.js';
+import {
+  startMetricsServer,
+  shouldEnableMetrics,
+  emitToolCall,
+  emitToolDuration,
+  emitToolsList,
+} from './metrics.js';
 
 /**
  * Extract the calling MCP client identifier from a request, with fallback.
@@ -143,14 +149,10 @@ async function main(): Promise<void> {
   // concern.  In local stdio mode (the common case for Claude Code / Cursor /
   // Windsurf users running `npx @nexusm/mcp-server`) nobody scrapes :9090, and
   // binding an extra port risks EADDRINUSE crashes on developer machines.
-  //
-  // Start metrics only when EXPLICITLY opted in, determined by either:
-  //   - NEXUS_METRICS_PORT is set (explicit opt-in regardless of transport), or
-  //   - transport mode is 'http' (server-side deployment always wants metrics).
-  //
   // Default stdio + no NEXUS_METRICS_PORT → metrics skipped → no crash.
-  const metricsEnabled = process.env.NEXUS_METRICS_PORT !== undefined || transportMode === 'http';
-  if (metricsEnabled) {
+  // The decision lives in shouldEnableMetrics() (single source of truth, also
+  // unit-tested) so the predicate cannot drift between code and tests.
+  if (shouldEnableMetrics(transportMode)) {
     await startMetricsServer();
   }
 
