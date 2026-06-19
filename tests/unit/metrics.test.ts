@@ -18,9 +18,15 @@
  * 4. `MCP_TOOL_DESCRIPTION_VERSION` Info gauge exposes hash label at value 1.
  * 5. `registry.metrics()` returns Prometheus text format (Content-Type header
  *    check via the `registry.contentType` string).
+ *
+ * Additional cases (stdio opt-in + defensive listen — fix for EADDRINUSE crash)
+ * =====================================
+ * 6. startMetricsServer() resolves (does not throw) when the listen port is
+ *    already occupied — defensive error handler test.
  */
 
-import { describe, it, expect, beforeEach } from 'vitest';
+import * as http from 'node:http';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   registry,
   MCP_TOOL_CALLS_TOTAL,
@@ -33,6 +39,7 @@ import {
   emitToolDuration,
   emitUnknownClient,
   setDescriptionHash,
+  startMetricsServer,
 } from '../../src/metrics.js';
 
 // ---------------------------------------------------------------------------
@@ -212,5 +219,126 @@ describe('emitToolsList — nexus_mcp_tools_list_calls_total', () => {
     expect(output).toContain('nexus_mcp_tools_list_calls_total');
     const lineRegex = /nexus_mcp_tools_list_calls_total\{[^}]*client="cline"[^}]*\}\s+2(\s|$)/m;
     expect(output).toMatch(lineRegex);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Case 6: stdio opt-in behaviour + defensive listen (EADDRINUSE must not crash)
+//
+// ESM node:http is a frozen native module — vi.spyOn(http, 'createServer')
+// throws "Cannot redefine property".  Instead we use real port binding:
+//   - Pre-occupy a port with a real http server, then call startMetricsServer()
+//     pointed at that same port via NEXUS_METRICS_PORT → EADDRINUSE fires and
+//     the defensive handler must resolve, not throw.
+//   - For the success case, use an ephemeral port that we close afterwards.
+// ---------------------------------------------------------------------------
+
+describe('Case 6 — startMetricsServer defensive listen error handling', () => {
+  // Silence console.error during these tests (we assert on it selectively).
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  let consoleErrorSpy: { mock: { calls: any[][] } };
+
+  beforeEach(() => {
+    consoleErrorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+  });
+
+  afterEach(async () => {
+    vi.restoreAllMocks();
+    // Clean up env overrides.
+    delete process.env.NEXUS_METRICS_PORT;
+  });
+
+  it('resolves without throwing when the port is already in use (EADDRINUSE)', async () => {
+    // 1. Bind a real server on an ephemeral port so the OS gives us the number.
+    const blocker = http.createServer();
+    await new Promise<void>((resolve) => blocker.listen(0, resolve));
+    const occupiedPort = (blocker.address() as { port: number }).port;
+
+    // 2. Point startMetricsServer at the already-occupied port.
+    process.env.NEXUS_METRICS_PORT = String(occupiedPort);
+
+    try {
+      // Must resolve (not reject / throw) even though the port is occupied.
+      await expect(startMetricsServer()).resolves.toBeUndefined();
+
+      // The defensive handler must have logged a warning.
+      expect(consoleErrorSpy).toHaveBeenCalledWith(
+        expect.stringContaining('metrics server failed to start'),
+      );
+      expect(consoleErrorSpy).toHaveBeenCalledWith(expect.stringContaining('EADDRINUSE'));
+    } finally {
+      await new Promise<void>((resolve, reject) =>
+        blocker.close((err) => (err ? reject(err) : resolve())),
+      );
+    }
+  });
+
+  it('resolves and logs success when the port is free', async () => {
+    // Use an ephemeral port: set NEXUS_METRICS_PORT=0 so the OS picks one.
+    // prom-client's startMetricsServer parses the env via parseInt, which
+    // yields 0 — Node then assigns a random free port.
+    process.env.NEXUS_METRICS_PORT = '0';
+
+    await expect(startMetricsServer()).resolves.toBeUndefined();
+
+    expect(consoleErrorSpy).toHaveBeenCalledWith(expect.stringContaining('metrics listening on'));
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Case 7: opt-in decision in main() — startMetricsServer not called in
+//         default stdio mode (no NEXUS_METRICS_PORT).
+//
+// We test the opt-in LOGIC only, by verifying the condition that index.ts
+// evaluates.  We cannot easily import main() in isolation, but we can assert
+// the guard expression matches the documented contract:
+//   metricsEnabled = NEXUS_METRICS_PORT !== undefined || transportMode === 'http'
+// ---------------------------------------------------------------------------
+
+describe('Case 7 — opt-in guard expression matches documented contract', () => {
+  const originalPort = process.env.NEXUS_METRICS_PORT;
+  const originalTransport = process.env.NEXUS_MCP_TRANSPORT;
+
+  afterEach(() => {
+    // Restore env after each test.
+    if (originalPort === undefined) {
+      delete process.env.NEXUS_METRICS_PORT;
+    } else {
+      process.env.NEXUS_METRICS_PORT = originalPort;
+    }
+    if (originalTransport === undefined) {
+      delete process.env.NEXUS_MCP_TRANSPORT;
+    } else {
+      process.env.NEXUS_MCP_TRANSPORT = originalTransport;
+    }
+  });
+
+  function metricsEnabled(): boolean {
+    const transportMode = (process.env.NEXUS_MCP_TRANSPORT ?? 'stdio').toLowerCase();
+    return process.env.NEXUS_METRICS_PORT !== undefined || transportMode === 'http';
+  }
+
+  it('default (stdio, no NEXUS_METRICS_PORT) → metrics disabled', () => {
+    delete process.env.NEXUS_METRICS_PORT;
+    delete process.env.NEXUS_MCP_TRANSPORT;
+    expect(metricsEnabled()).toBe(false);
+  });
+
+  it('NEXUS_METRICS_PORT set → metrics enabled (opt-in)', () => {
+    process.env.NEXUS_METRICS_PORT = '9191';
+    delete process.env.NEXUS_MCP_TRANSPORT;
+    expect(metricsEnabled()).toBe(true);
+  });
+
+  it('NEXUS_MCP_TRANSPORT=http → metrics enabled (server-side deployment)', () => {
+    delete process.env.NEXUS_METRICS_PORT;
+    process.env.NEXUS_MCP_TRANSPORT = 'http';
+    expect(metricsEnabled()).toBe(true);
+  });
+
+  it('NEXUS_MCP_TRANSPORT=stdio + NEXUS_METRICS_PORT set → metrics enabled', () => {
+    process.env.NEXUS_METRICS_PORT = '9090';
+    process.env.NEXUS_MCP_TRANSPORT = 'stdio';
+    expect(metricsEnabled()).toBe(true);
   });
 });

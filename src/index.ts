@@ -139,9 +139,20 @@ async function main(): Promise<void> {
   const server = createServer();
   const transportMode = (process.env.NEXUS_MCP_TRANSPORT ?? 'stdio').toLowerCase();
 
-  // Start Prometheus metrics server on separate port (TASK-014, R2 m-6).
-  // Coexists with stdio transport — different fd / no stdin/stdout contention.
-  await startMetricsServer();
+  // Metrics opt-in: the Prometheus scrape endpoint is a server-side deployment
+  // concern.  In local stdio mode (the common case for Claude Code / Cursor /
+  // Windsurf users running `npx @nexusm/mcp-server`) nobody scrapes :9090, and
+  // binding an extra port risks EADDRINUSE crashes on developer machines.
+  //
+  // Start metrics only when EXPLICITLY opted in, determined by either:
+  //   - NEXUS_METRICS_PORT is set (explicit opt-in regardless of transport), or
+  //   - transport mode is 'http' (server-side deployment always wants metrics).
+  //
+  // Default stdio + no NEXUS_METRICS_PORT → metrics skipped → no crash.
+  const metricsEnabled = process.env.NEXUS_METRICS_PORT !== undefined || transportMode === 'http';
+  if (metricsEnabled) {
+    await startMetricsServer();
+  }
 
   if (transportMode === 'http') {
     await startHttp(server);
