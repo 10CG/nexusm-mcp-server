@@ -31,7 +31,13 @@ import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js'
 import { CallToolRequestSchema, ListToolsRequestSchema } from '@modelcontextprotocol/sdk/types.js';
 
 import { tools, toolsByName } from './tools/index.js';
-import { startMetricsServer, emitToolCall, emitToolDuration, emitToolsList } from './metrics.js';
+import {
+  startMetricsServer,
+  shouldEnableMetrics,
+  emitToolCall,
+  emitToolDuration,
+  emitToolsList,
+} from './metrics.js';
 
 /**
  * Extract the calling MCP client identifier from a request, with fallback.
@@ -139,9 +145,16 @@ async function main(): Promise<void> {
   const server = createServer();
   const transportMode = (process.env.NEXUS_MCP_TRANSPORT ?? 'stdio').toLowerCase();
 
-  // Start Prometheus metrics server on separate port (TASK-014, R2 m-6).
-  // Coexists with stdio transport — different fd / no stdin/stdout contention.
-  await startMetricsServer();
+  // Metrics opt-in: the Prometheus scrape endpoint is a server-side deployment
+  // concern.  In local stdio mode (the common case for Claude Code / Cursor /
+  // Windsurf users running `npx @nexusm/mcp-server`) nobody scrapes :9090, and
+  // binding an extra port risks EADDRINUSE crashes on developer machines.
+  // Default stdio + no NEXUS_METRICS_PORT → metrics skipped → no crash.
+  // The decision lives in shouldEnableMetrics() (single source of truth, also
+  // unit-tested) so the predicate cannot drift between code and tests.
+  if (shouldEnableMetrics(transportMode)) {
+    await startMetricsServer();
+  }
 
   if (transportMode === 'http') {
     await startHttp(server);

@@ -18,9 +18,18 @@
  * 4. `MCP_TOOL_DESCRIPTION_VERSION` Info gauge exposes hash label at value 1.
  * 5. `registry.metrics()` returns Prometheus text format (Content-Type header
  *    check via the `registry.contentType` string).
+ *
+ * Additional cases (stdio opt-in + defensive listen — fix for EADDRINUSE crash)
+ * =====================================
+ * 6. startMetricsServer() defensive listen: resolves null (not throw) on
+ *    EADDRINUSE / non-numeric port; returns + cleans up the server handle on
+ *    the success path.
+ * 7. shouldEnableMetrics() opt-in predicate (the LIVE exported function that
+ *    main() calls) across the stdio/http × port-set matrix.
  */
 
-import { describe, it, expect, beforeEach } from 'vitest';
+import * as http from 'node:http';
+import { afterEach, beforeEach, describe, expect, it, vi, type MockInstance } from 'vitest';
 import {
   registry,
   MCP_TOOL_CALLS_TOTAL,
@@ -33,6 +42,8 @@ import {
   emitToolDuration,
   emitUnknownClient,
   setDescriptionHash,
+  startMetricsServer,
+  shouldEnableMetrics,
 } from '../../src/metrics.js';
 
 // ---------------------------------------------------------------------------
@@ -212,5 +223,112 @@ describe('emitToolsList — nexus_mcp_tools_list_calls_total', () => {
     expect(output).toContain('nexus_mcp_tools_list_calls_total');
     const lineRegex = /nexus_mcp_tools_list_calls_total\{[^}]*client="cline"[^}]*\}\s+2(\s|$)/m;
     expect(output).toMatch(lineRegex);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Case 6: stdio opt-in behaviour + defensive listen (EADDRINUSE must not crash)
+//
+// ESM node:http is a frozen native module — vi.spyOn(http, 'createServer')
+// throws "Cannot redefine property".  Instead we use real port binding:
+//   - Pre-occupy a port with a real http server, then call startMetricsServer()
+//     pointed at that same port via NEXUS_METRICS_PORT → EADDRINUSE fires and
+//     the defensive handler must resolve, not throw.
+//   - For the success case, use an ephemeral port that we close afterwards.
+// ---------------------------------------------------------------------------
+
+describe('Case 6 — startMetricsServer defensive listen error handling', () => {
+  // Silence console.error during these tests (we assert on it selectively).
+  let consoleErrorSpy: MockInstance;
+
+  beforeEach(() => {
+    consoleErrorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+  });
+
+  afterEach(async () => {
+    vi.restoreAllMocks();
+    // Clean up env overrides.
+    delete process.env.NEXUS_METRICS_PORT;
+  });
+
+  it('resolves null (not throw) when the port is already in use (EADDRINUSE)', async () => {
+    // 1. Bind a real server on an ephemeral port so the OS gives us the number.
+    const blocker = http.createServer();
+    await new Promise<void>((resolve) => blocker.listen(0, resolve));
+    const occupiedPort = (blocker.address() as { port: number }).port;
+
+    // 2. Point startMetricsServer at the already-occupied port.
+    process.env.NEXUS_METRICS_PORT = String(occupiedPort);
+
+    try {
+      // Must resolve null (not reject / throw) even though the port is occupied.
+      await expect(startMetricsServer()).resolves.toBeNull();
+
+      // The defensive handler must have logged a warning.
+      expect(consoleErrorSpy).toHaveBeenCalledWith(
+        expect.stringContaining('metrics server failed to start'),
+      );
+      expect(consoleErrorSpy).toHaveBeenCalledWith(expect.stringContaining('EADDRINUSE'));
+    } finally {
+      await new Promise<void>((resolve, reject) =>
+        blocker.close((err) => (err ? reject(err) : resolve())),
+      );
+    }
+  });
+
+  it('resolves the server handle and logs success when the port is free', async () => {
+    // Use an ephemeral port: NEXUS_METRICS_PORT=0 → OS picks a free port.
+    process.env.NEXUS_METRICS_PORT = '0';
+
+    const server = await startMetricsServer();
+    try {
+      expect(server).not.toBeNull();
+      expect(server!.listening).toBe(true);
+      expect(consoleErrorSpy).toHaveBeenCalledWith(expect.stringContaining('metrics listening on'));
+    } finally {
+      // Close the listener so the socket does not leak past the test (the
+      // returned handle exists precisely so callers/tests can clean up).
+      if (server) {
+        await new Promise<void>((resolve, reject) =>
+          server.close((err) => (err ? reject(err) : resolve())),
+        );
+      }
+    }
+  });
+
+  it('resolves null (not throw) when NEXUS_METRICS_PORT is non-numeric', async () => {
+    // parseInt('notanumber') → NaN; without validation Node would coerce NaN to
+    // an ephemeral port and silently bind. We reject it up front.
+    process.env.NEXUS_METRICS_PORT = 'notanumber';
+
+    await expect(startMetricsServer()).resolves.toBeNull();
+    expect(consoleErrorSpy).toHaveBeenCalledWith(
+      expect.stringContaining('invalid NEXUS_METRICS_PORT'),
+    );
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Case 7: opt-in decision — exercises the LIVE shouldEnableMetrics() that
+// main() in index.ts calls (imported, not a copy), so the predicate cannot
+// drift between production code and test. Env is passed explicitly to avoid
+// mutating process.env.
+// ---------------------------------------------------------------------------
+
+describe('Case 7 — shouldEnableMetrics opt-in predicate (live binding)', () => {
+  it('default (stdio, no NEXUS_METRICS_PORT) → disabled', () => {
+    expect(shouldEnableMetrics('stdio', {})).toBe(false);
+  });
+
+  it('NEXUS_METRICS_PORT set → enabled (explicit opt-in)', () => {
+    expect(shouldEnableMetrics('stdio', { NEXUS_METRICS_PORT: '9191' })).toBe(true);
+  });
+
+  it('http transport → enabled (server-side deployment)', () => {
+    expect(shouldEnableMetrics('http', {})).toBe(true);
+  });
+
+  it('stdio + NEXUS_METRICS_PORT set → enabled', () => {
+    expect(shouldEnableMetrics('stdio', { NEXUS_METRICS_PORT: '9090' })).toBe(true);
   });
 });
