@@ -13,6 +13,31 @@
  *   - All diagnostic output uses env var *names* only, never values.
  */
 
+/**
+ * Normalize a raw `NEXUS_API_URL` value so it always includes the `/v1`
+ * API-version segment required by `@nexusm/sdk`.
+ *
+ * Rules (applied in order):
+ *  1. Trim leading/trailing whitespace.
+ *  2. Strip any trailing slashes.
+ *  3. If the resulting path does not already end with `/v1`, append `/v1`.
+ *
+ * The function is idempotent: `normalizeApiUrl(normalizeApiUrl(x)) ===
+ * normalizeApiUrl(x)` for all inputs.
+ *
+ * Examples:
+ *   `http://localhost:8787`     → `http://localhost:8787/v1`
+ *   `http://localhost:8787/`    → `http://localhost:8787/v1`
+ *   `http://localhost:8787/v1`  → `http://localhost:8787/v1`  (unchanged)
+ *   `http://localhost:8787/v1/` → `http://localhost:8787/v1`
+ *   `https://nexus.example/v1`  → `https://nexus.example/v1` (unchanged)
+ *   `https://h/api/v1`          → `https://h/api/v1`          (unchanged)
+ */
+export function normalizeApiUrl(raw: string): string {
+  const stripped = raw.trim().replace(/\/+$/, '');
+  return stripped.endsWith('/v1') ? stripped : `${stripped}/v1`;
+}
+
 /** Required env var keys. Order is preserved when reporting missing vars. */
 const REQUIRED_ENV_VARS = ['NEXUS_API_URL', 'NEXUS_API_TOKEN', 'NEXUS_TENANT_ID'] as const;
 
@@ -26,7 +51,11 @@ type RequiredEnvVar = (typeof REQUIRED_ENV_VARS)[number];
  * without re-declaring it.
  */
 export interface AuthConfig {
-  /** Base URL of the Nexus HTTP API (no trailing slash enforced). */
+  /**
+   * Base URL of the Nexus HTTP API, normalized to include the `/v1` suffix.
+   * Trailing slashes are stripped and `/v1` is appended when absent, so
+   * pointing `NEXUS_API_URL` at a bare origin or local proxy works correctly.
+   */
   readonly apiUrl: string;
   /** Bearer token for Nexus API. NEVER log this value. */
   readonly apiToken: string;
@@ -90,8 +119,16 @@ export function loadAuthConfig(
     throw new Error('unreachable');
   }
 
+  const rawApiUrl = values.NEXUS_API_URL as string;
+  const normalizedApiUrl = normalizeApiUrl(rawApiUrl);
+  if (normalizedApiUrl !== rawApiUrl) {
+    io.stderr.write(
+      '[nexusm-mcp-server] NEXUS_API_URL had no /v1 suffix; appended it (backend routes are /v1/*).\n',
+    );
+  }
+
   return {
-    apiUrl: values.NEXUS_API_URL as string,
+    apiUrl: normalizedApiUrl,
     apiToken: values.NEXUS_API_TOKEN as string,
     tenantId: values.NEXUS_TENANT_ID as string,
   };
