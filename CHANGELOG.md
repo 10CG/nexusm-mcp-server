@@ -9,6 +9,29 @@ Versions follow [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.1.3] — 2026-06-20
+
+### Fixed
+
+- **NEXUS_API_URL `/v1` auto-normalization** (FU-MCP-API-URL-V1-SUFFIX): The
+  MCP server previously passed `NEXUS_API_URL` straight through as the SDK
+  `baseUrl`. When set to a bare origin (`http://localhost:8787`), the SDK
+  would build `http://localhost:8787/memories` — a path the backend never
+  mounts — producing a backend 404 surfaced to the MCP client as a misleading
+  `InternalError/-32603`.
+
+  `src/auth.ts` now exports `normalizeApiUrl(raw)` and calls it in
+  `loadAuthConfig`. The helper trims whitespace, strips trailing slashes, and
+  appends `/v1` when the path does not already end with it. The function is
+  idempotent. When normalization appends `/v1`, one diagnostic line is written
+  to stderr (never stdout — MCP stdio invariant).
+
+  Bare-origin and local-proxy configurations (`http://localhost:8787`,
+  `http://localhost:8787/`) now work without requiring users to add the `/v1`
+  suffix manually.
+
+---
+
 ## [0.1.2] — 2026-06-19
 
 ### Fixed

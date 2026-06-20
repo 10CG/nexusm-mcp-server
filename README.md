@@ -12,7 +12,7 @@ Set via environment (e.g. the `env` block of your client's `.mcp.json`):
 
 | Env var | Required | Purpose |
 |---------|----------|---------|
-| `NEXUS_API_URL` | yes | Base URL of the Nexus REST API |
+| `NEXUS_API_URL` | yes | Base URL of the Nexus REST API. The server **auto-appends `/v1`** if absent, so a bare origin (`http://localhost:8787`) or a local proxy URL works — you don't need to add the suffix manually. Canonical form: `https://your-nexus-host/v1`. |
 | `NEXUS_API_TOKEN` | yes | Nexus API key (the product auth contract) |
 | `NEXUS_TENANT_ID` | yes | Tenant id for the compound-id isolation |
 | `NEXUS_METRICS_PORT` | no | **Opt-in** Prometheus `/metrics` port. **Off by default in stdio mode** — the scrape endpoint is a server-side concern, and a local stdio client (Claude Code / Cursor / Windsurf) has no scraper. Set this only when you actually scrape metrics. (`NEXUS_MCP_TRANSPORT=http` also enables it.) |
@@ -21,7 +21,10 @@ Set via environment (e.g. the `env` block of your client's `.mcp.json`):
 > control in front of the API (e.g. a reverse proxy / gateway / Cloudflare
 > Access) is **not** this client's concern — handle it transparently at the
 > network/transport layer (point `NEXUS_API_URL` at a local proxy) so the
-> client stays deployment-agnostic.
+> client stays deployment-agnostic. When pointing at a local proxy, set
+> `NEXUS_API_URL` to the proxy origin (e.g. `http://localhost:8787`); the
+> server will append `/v1` automatically and log a one-line diagnostic to
+> stderr confirming the normalization.
 
 ## Status
 
