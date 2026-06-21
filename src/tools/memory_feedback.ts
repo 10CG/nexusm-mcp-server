@@ -33,7 +33,7 @@
 import type { CallToolResult } from '@modelcontextprotocol/sdk/types.js';
 import { NexusClient, type FeedbackSubmitRequest } from '@nexusm/sdk';
 
-import { loadAuthConfig } from '../auth.js';
+import { loadAuthConfig, resolveUserId, type AuthConfig } from '../auth.js';
 import { McpErrorCode, NexusError, isAxiosLikeError, mapHttpStatusToMcpError } from '../errors.js';
 import type { ToolDefinition } from './types.js';
 
@@ -42,17 +42,19 @@ const NAME = 'nexus.memory_feedback';
 /** Lazy NexusClient singleton — built on first handler invocation so
  *  importing the module does not require env vars (matches memory_search). */
 let _client: NexusClient | null = null;
+let _auth: AuthConfig | null = null;
 
-function getClient(): NexusClient {
-  if (_client === null) {
+function getClientAndAuth(): { client: NexusClient; auth: AuthConfig } {
+  if (_client === null || _auth === null) {
     const cfg = loadAuthConfig();
+    _auth = cfg;
     _client = new NexusClient({
       apiKey: cfg.apiToken,
       baseUrl: cfg.apiUrl,
       tenantId: cfg.tenantId,
     });
   }
-  return _client;
+  return { client: _client, auth: _auth };
 }
 
 /**
@@ -61,6 +63,7 @@ function getClient(): NexusClient {
  */
 export function __resetClientForTesting(): void {
   _client = null;
+  _auth = null;
 }
 
 /** Structlog sink. Always stderr (MCP stdio invariant — stdout is JSON-RPC). */
@@ -87,18 +90,28 @@ interface ParsedArgs {
  * Throws {@link NexusError}(InvalidParams) on any violation — caught at
  * the MCP dispatch layer (src/index.ts) and converted to a JSON-RPC
  * error response per proposal §M-3. Matches the memory_search pattern.
+ *
+ * @param auth - Auth config; used to resolve the effective user_id (pin vs per-call).
  */
-function parseAndValidate(args: Record<string, unknown>): ParsedArgs {
+function parseAndValidate(args: Record<string, unknown>, auth: AuthConfig): ParsedArgs {
   const reject = (msg: string): never => {
     throw new NexusError(msg, McpErrorCode.InvalidParams, null);
   };
 
-  // user_id — required, non-empty string.
-  const userIdRaw = args['user_id'];
-  if (typeof userIdRaw !== 'string' || userIdRaw.trim() === '') {
+  // user_id — resolved via server-side pin or validated per-call arg.
+  // Note: when pin is active, args['user_id'] is ignored (audit log still
+  // records the resolved value so the trail is accurate).
+  // We re-throw as the standard feedback rejection message so the error
+  // shape is consistent with prior versions (no message change for callers).
+  let user_id: string;
+  try {
+    user_id = resolveUserId(auth, args['user_id']);
+  } catch {
     reject("'user_id' is required and must be a non-empty string");
+    // TypeScript flow: reject() is typed `never`, so this line is unreachable
+    // but satisfies the definite-assignment check.
+    throw new Error('unreachable');
   }
-  const user_id = (userIdRaw as string).trim();
 
   // retrieve_id — required, non-empty string.
   const retrieveIdRaw = args['retrieve_id'];
@@ -259,10 +272,13 @@ export const memoryFeedbackTool: ToolDefinition = {
     required: ['feedback_id', 'retrieve_id', 'status', 'created_at'],
   },
   handler: async (args): Promise<CallToolResult> => {
+    // Load auth config (for server-side user_id pin) and client.
+    const { client, auth } = getClientAndAuth();
+
     // parseAndValidate throws NexusError(InvalidParams) on violation;
     // we let it propagate so the MCP dispatch layer can map it to a
     // JSON-RPC error response (matches memory_search convention).
-    const parsed = parseAndValidate(args);
+    const parsed = parseAndValidate(args, auth);
 
     // Audit structlog (stderr only). Body intentionally does NOT include
     // user_id — that property travels only on this log line.
@@ -275,8 +291,6 @@ export const memoryFeedbackTool: ToolDefinition = {
         rating: parsed.body.rating,
       }),
     );
-
-    const client = getClient();
     // Wave 2B mid_audit-to-pre_merge fix: wrap SDK call + map errors per §M-3
     // (mirrors context.ts pattern). Without this, axios-like 401/403/429
     // surface as JSON-RPC InternalError instead of Unauthorized/RateLimited.

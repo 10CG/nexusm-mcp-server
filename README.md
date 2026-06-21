@@ -15,6 +15,7 @@ Set via environment (e.g. the `env` block of your client's `.mcp.json`):
 | `NEXUS_API_URL` | yes | Base URL of the Nexus REST API. The server **auto-appends `/v1`** if absent, so a bare origin (`http://localhost:8787`) or a local proxy URL works — you don't need to add the suffix manually. Canonical form: `https://your-nexus-host/v1`. |
 | `NEXUS_API_TOKEN` | yes | Nexus API key (the product auth contract) |
 | `NEXUS_TENANT_ID` | yes | Tenant id for the compound-id isolation |
+| `NEXUS_DEFAULT_USER_ID` | no | **Single-user pin.** When set to a non-empty value, the server uses it as `user_id` for every tool call, overriding whatever `user_id` the LLM supplies. Leave unset for multi-user deployments where each tool call provides its own `user_id`. Recommended for personal / dogfood setups where the LLM picks inconsistent IDs across sessions. **⚠️ Do NOT set this on a shared / multi-user server** — every user's memories and context would be written and retrieved under this single id, silently collapsing all users into one (cross-user memory bleed). |
 | `NEXUS_METRICS_PORT` | no | **Opt-in** Prometheus `/metrics` port. **Off by default in stdio mode** — the scrape endpoint is a server-side concern, and a local stdio client (Claude Code / Cursor / Windsurf) has no scraper. Set this only when you actually scrape metrics. (`NEXUS_MCP_TRANSPORT=http` also enables it.) |
 
 > The Nexus API auth contract is `NEXUS_API_TOKEN`. Any deployment-edge access

@@ -98,6 +98,25 @@ describe('memory_search — mode forwarding', () => {
   });
 });
 
+describe('memory_search — NEXUS_DEFAULT_USER_ID pin (regression guard for the load-bearing override)', () => {
+  it('uses the pinned user_id in the outgoing search body, ignoring args.user_id', async () => {
+    process.env.NEXUS_DEFAULT_USER_ID = 'pinned-user';
+    __resetClientForTesting(); // clears cached auth so loadAuthConfig re-reads the env
+    try {
+      await memorySearchTool.handler({
+        user_id: 'llm-chose-this-user',
+        query: 'q',
+        mode: 'hybrid',
+      });
+      const body = searchSpy.mock.calls[0]?.[0] as Record<string, unknown>;
+      expect(body.user_id).toBe('pinned-user');
+    } finally {
+      delete process.env.NEXUS_DEFAULT_USER_ID;
+      __resetClientForTesting();
+    }
+  });
+});
+
 describe('memory_search — score_threshold passthrough', () => {
   it('passes score_threshold=0.7 through under the locked field name', async () => {
     await memorySearchTool.handler({

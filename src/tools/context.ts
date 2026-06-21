@@ -26,7 +26,7 @@ import type { CallToolResult } from '@modelcontextprotocol/sdk/types.js';
 import { NexusClient } from '@nexusm/sdk';
 import type { ContextRequest, ContextRetrieveResponse } from '@nexusm/sdk';
 
-import { loadAuthConfig, type AuthConfig } from '../auth.js';
+import { loadAuthConfig, resolveUserId, type AuthConfig } from '../auth.js';
 import { NexusError, McpErrorCode, isAxiosLikeError, mapHttpStatusToMcpError } from '../errors.js';
 import type { ToolDefinition } from './types.js';
 
@@ -106,28 +106,37 @@ export interface ContextClient {
 }
 
 let cachedClient: ContextClient | null = null;
+let cachedAuth: AuthConfig | null = null;
 
 /** @internal — for tests. Replace the cached client. Pass `null` to reset. */
 export function __setClientForTesting(client: ContextClient | null): void {
   cachedClient = client;
 }
 
-function defaultClientFactory(): ContextClient {
+/** @internal — for tests. Override the cached auth config. Pass `null` to reset. */
+export function __setAuthForTesting(auth: AuthConfig | null): void {
+  cachedAuth = auth;
+}
+
+function defaultClientFactory(): { client: ContextClient; auth: AuthConfig } {
   const cfg: AuthConfig = loadAuthConfig();
   // NexusClient takes `apiKey` (mapped from NEXUS_API_TOKEN), `tenantId`,
   // and `baseUrl` (mapped from NEXUS_API_URL).
-  return new NexusClient({
+  const client = new NexusClient({
     apiKey: cfg.apiToken,
     tenantId: cfg.tenantId,
     baseUrl: cfg.apiUrl,
   });
+  return { client, auth: cfg };
 }
 
-function getClient(): ContextClient {
-  if (cachedClient === null) {
-    cachedClient = defaultClientFactory();
+function getClientAndAuth(): { client: ContextClient; auth: AuthConfig } {
+  if (cachedClient === null || cachedAuth === null) {
+    const { client, auth } = defaultClientFactory();
+    cachedClient = client;
+    cachedAuth = auth;
   }
-  return cachedClient;
+  return { client: cachedClient, auth: cachedAuth };
 }
 
 // ---------------------------------------------------------------------------
@@ -150,7 +159,8 @@ function summarise(resp: ContextRetrieveResponse): string {
 async function handler(args: Record<string, unknown>): Promise<CallToolResult> {
   // ---- Input narrowing (schema enforcement is the MCP server's job; we
   // ---- defensively coerce here for runtime safety) -------------------
-  const userId = args.user_id as string;
+  const { client, auth } = getClientAndAuth();
+  const userId = resolveUserId(auth, args.user_id);
   const query = args.query as string;
   const limit = (args.limit as number | undefined) ?? 10;
   const asOf = args.as_of as string | undefined;
@@ -174,7 +184,7 @@ async function handler(args: Record<string, unknown>): Promise<CallToolResult> {
   // ---- Call SDK; translate errors to NexusError using TASK-013 mapping ---
   let resp: ContextRetrieveResponse;
   try {
-    resp = await getClient().context.retrieve(sdkRequest);
+    resp = await client.context.retrieve(sdkRequest);
   } catch (err) {
     // Re-throw NexusError unchanged (already translated, e.g. from validateAsOf).
     if (err instanceof NexusError) throw err;

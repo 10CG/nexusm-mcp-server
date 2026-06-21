@@ -9,11 +9,13 @@
  *   5. AuthConfig export shape — exported config has the 3 expected fields with string types
  *   6. normalizeApiUrl — 7 canonical edge cases + idempotency
  *   7. loadAuthConfig normalizes apiUrl and emits one diagnostic line when /v1 is absent
+ *   8. NEXUS_DEFAULT_USER_ID — loadAuthConfig sets defaultUserId; absent → undefined
+ *   9. resolveUserId — pin overrides args; no pin validates args; invalid args throws
  */
 
 import { describe, it, expect, vi, beforeEach, afterEach, type MockInstance } from 'vitest';
 import type { AuthConfig, AuthIO } from '../../src/auth.js';
-import { loadAuthConfig, normalizeApiUrl } from '../../src/auth.js';
+import { loadAuthConfig, normalizeApiUrl, resolveUserId } from '../../src/auth.js';
 
 /** Sentinel token used to detect any redaction failure. */
 const SENTINEL_TOKEN = 'sk-test-SECRET-12345';
@@ -364,5 +366,195 @@ describe('loadAuthConfig — NEXUS_API_URL normalization', () => {
     // The trailing slash makes the raw value differ from the normalized result,
     // so the diagnostic fires once (it is a normalization, not a pure no-op).
     expect(stderrBuf.join('')).toContain('/v1');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// NEXUS_DEFAULT_USER_ID — single-user pin (case 8)
+// ---------------------------------------------------------------------------
+
+describe('loadAuthConfig — NEXUS_DEFAULT_USER_ID pin', () => {
+  it('sets defaultUserId to undefined when NEXUS_DEFAULT_USER_ID is absent', () => {
+    const env = makeEnv({
+      NEXUS_API_URL: 'http://localhost:8787/v1',
+      NEXUS_API_TOKEN: SENTINEL_TOKEN,
+      NEXUS_TENANT_ID: 'tenant-abc',
+      // NEXUS_DEFAULT_USER_ID intentionally absent
+    });
+    const { io } = makeIO();
+
+    const cfg = loadAuthConfig(env, io);
+
+    expect(cfg.defaultUserId).toBeUndefined();
+  });
+
+  it('sets defaultUserId to undefined when NEXUS_DEFAULT_USER_ID is empty string', () => {
+    const env = makeEnv({
+      NEXUS_API_URL: 'http://localhost:8787/v1',
+      NEXUS_API_TOKEN: SENTINEL_TOKEN,
+      NEXUS_TENANT_ID: 'tenant-abc',
+      NEXUS_DEFAULT_USER_ID: '',
+    });
+    const { io } = makeIO();
+
+    const cfg = loadAuthConfig(env, io);
+
+    expect(cfg.defaultUserId).toBeUndefined();
+  });
+
+  it('sets defaultUserId to undefined when NEXUS_DEFAULT_USER_ID is whitespace-only', () => {
+    const env = makeEnv({
+      NEXUS_API_URL: 'http://localhost:8787/v1',
+      NEXUS_API_TOKEN: SENTINEL_TOKEN,
+      NEXUS_TENANT_ID: 'tenant-abc',
+      NEXUS_DEFAULT_USER_ID: '   ',
+    });
+    const { io } = makeIO();
+
+    const cfg = loadAuthConfig(env, io);
+
+    expect(cfg.defaultUserId).toBeUndefined();
+  });
+
+  it('sets defaultUserId to the trimmed value when NEXUS_DEFAULT_USER_ID is set', () => {
+    const env = makeEnv({
+      NEXUS_API_URL: 'http://localhost:8787/v1',
+      NEXUS_API_TOKEN: SENTINEL_TOKEN,
+      NEXUS_TENANT_ID: 'tenant-abc',
+      NEXUS_DEFAULT_USER_ID: '  pinned-user  ',
+    });
+    const { io } = makeIO();
+
+    const cfg = loadAuthConfig(env, io);
+
+    expect(cfg.defaultUserId).toBe('pinned-user');
+  });
+
+  it('writes a diagnostic to stderr when NEXUS_DEFAULT_USER_ID is set', () => {
+    const env = makeEnv({
+      NEXUS_API_URL: 'http://localhost:8787/v1',
+      NEXUS_API_TOKEN: SENTINEL_TOKEN,
+      NEXUS_TENANT_ID: 'tenant-abc',
+      NEXUS_DEFAULT_USER_ID: 'pinned-user',
+    });
+    const { io, stderrBuf } = makeIO();
+
+    loadAuthConfig(env, io);
+
+    const stderr = stderrBuf.join('');
+    expect(stderr).toContain('NEXUS_DEFAULT_USER_ID');
+    expect(stderr).toContain('pinned-user');
+    expect(stderr).toContain('single-user mode');
+    // Must not touch stdout.
+    expect(realStdoutChunks.join('')).toBe('');
+  });
+
+  it('does not write a pin diagnostic when NEXUS_DEFAULT_USER_ID is absent', () => {
+    const env = makeEnv({
+      NEXUS_API_URL: 'http://localhost:8787/v1',
+      NEXUS_API_TOKEN: SENTINEL_TOKEN,
+      NEXUS_TENANT_ID: 'tenant-abc',
+    });
+    const { io, stderrBuf } = makeIO();
+
+    loadAuthConfig(env, io);
+
+    expect(stderrBuf.join('')).not.toContain('NEXUS_DEFAULT_USER_ID');
+    expect(stderrBuf.join('')).not.toContain('single-user mode');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// resolveUserId — pure helper (case 9)
+// ---------------------------------------------------------------------------
+
+describe('resolveUserId — pin set', () => {
+  const pinnedAuth: AuthConfig = {
+    apiUrl: 'http://test/v1',
+    apiToken: 'tok',
+    tenantId: 'tenant-x',
+    defaultUserId: 'pinned-user',
+  };
+
+  it('returns the pin value regardless of args.user_id when pin is set', () => {
+    expect(resolveUserId(pinnedAuth, 'some-other-user')).toBe('pinned-user');
+  });
+
+  it('returns the pin value when args.user_id is a different value', () => {
+    expect(resolveUserId(pinnedAuth, 'user-99')).toBe('pinned-user');
+  });
+
+  it('returns the pin value when args.user_id is an empty string', () => {
+    expect(resolveUserId(pinnedAuth, '')).toBe('pinned-user');
+  });
+
+  it('returns the pin value when args.user_id is missing (undefined)', () => {
+    expect(resolveUserId(pinnedAuth, undefined)).toBe('pinned-user');
+  });
+
+  it('returns the pin value when args.user_id is null', () => {
+    expect(resolveUserId(pinnedAuth, null)).toBe('pinned-user');
+  });
+
+  it('returns the pin value when args.user_id is a number', () => {
+    expect(resolveUserId(pinnedAuth, 42)).toBe('pinned-user');
+  });
+});
+
+describe('resolveUserId — pin unset', () => {
+  const unpinnedAuth: AuthConfig = {
+    apiUrl: 'http://test/v1',
+    apiToken: 'tok',
+    tenantId: 'tenant-x',
+    // defaultUserId intentionally absent
+  };
+
+  it('returns the per-call user_id when it is a valid non-empty string', () => {
+    expect(resolveUserId(unpinnedAuth, 'user-123')).toBe('user-123');
+  });
+
+  it('trims whitespace from the per-call user_id', () => {
+    expect(resolveUserId(unpinnedAuth, '  user-abc  ')).toBe('user-abc');
+  });
+
+  it('throws InvalidParams NexusError when args.user_id is missing (undefined)', () => {
+    expect(() => resolveUserId(unpinnedAuth, undefined)).toThrow(
+      expect.objectContaining({ mcpErrorCode: -32602 }),
+    );
+  });
+
+  it('throws InvalidParams NexusError when args.user_id is an empty string', () => {
+    expect(() => resolveUserId(unpinnedAuth, '')).toThrow(
+      expect.objectContaining({ mcpErrorCode: -32602 }),
+    );
+  });
+
+  it('throws InvalidParams NexusError when args.user_id is whitespace-only', () => {
+    expect(() => resolveUserId(unpinnedAuth, '   ')).toThrow(
+      expect.objectContaining({ mcpErrorCode: -32602 }),
+    );
+  });
+
+  it('throws InvalidParams NexusError when args.user_id is a number', () => {
+    expect(() => resolveUserId(unpinnedAuth, 42)).toThrow(
+      expect.objectContaining({ mcpErrorCode: -32602 }),
+    );
+  });
+
+  it('throws InvalidParams NexusError when args.user_id is null', () => {
+    expect(() => resolveUserId(unpinnedAuth, null)).toThrow(
+      expect.objectContaining({ mcpErrorCode: -32602 }),
+    );
+  });
+
+  it('thrown error message mentions user_id', () => {
+    let caught: unknown;
+    try {
+      resolveUserId(unpinnedAuth, undefined);
+    } catch (e) {
+      caught = e;
+    }
+    expect(caught).toBeInstanceOf(Error);
+    expect((caught as Error).message).toContain('user_id');
   });
 });

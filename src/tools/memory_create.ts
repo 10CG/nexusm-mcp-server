@@ -33,7 +33,7 @@
 
 import { NexusClient } from '@nexusm/sdk';
 
-import { loadAuthConfig } from '../auth.js';
+import { loadAuthConfig, resolveUserId, type AuthConfig } from '../auth.js';
 import { McpErrorCode, NexusError, isAxiosLikeError, mapHttpStatusToMcpError } from '../errors.js';
 import { type ToolDefinition } from './types.js';
 
@@ -77,22 +77,25 @@ const METADATA_MAX_VALUE_LEN = 200;
 
 /** Lazily-instantiated SDK client. Reset by `__resetClientForTesting`. */
 let clientSingleton: NexusClient | null = null;
+let authSingleton: AuthConfig | null = null;
 
-function getClient(): NexusClient {
-  if (clientSingleton === null) {
+function getClientAndAuth(): { client: NexusClient; auth: AuthConfig } {
+  if (clientSingleton === null || authSingleton === null) {
     const auth = loadAuthConfig();
+    authSingleton = auth;
     clientSingleton = new NexusClient({
       apiKey: auth.apiToken,
       baseUrl: auth.apiUrl,
       tenantId: auth.tenantId,
     });
   }
-  return clientSingleton;
+  return { client: clientSingleton, auth: authSingleton };
 }
 
 /** Test-only seam — mirrors `memory_search.ts`. @internal */
 export function __resetClientForTesting(): void {
   clientSingleton = null;
+  authSingleton = null;
 }
 
 interface ConflictResolutionEcho {
@@ -179,13 +182,9 @@ export const memoryCreateTool: ToolDefinition = {
   },
   handler: async (args) => {
     // ---- Required fields ----
-    if (typeof args.user_id !== 'string' || args.user_id.length === 0) {
-      throw new NexusError(
-        'user_id is required (non-empty string)',
-        McpErrorCode.InvalidParams,
-        422,
-      );
-    }
+    const { client, auth } = getClientAndAuth();
+    const userId = resolveUserId(auth, args.user_id);
+
     if (typeof args.content !== 'string' || args.content.length === 0) {
       throw new NexusError(
         'content is required (non-empty string)',
@@ -269,7 +268,7 @@ export const memoryCreateTool: ToolDefinition = {
       agent_id?: string;
     }
     const body: MemoryCreateBody = {
-      user_id: args.user_id,
+      user_id: userId,
       content: args.content,
       memory_type,
     };
@@ -277,8 +276,6 @@ export const memoryCreateTool: ToolDefinition = {
     if (typeof args.valid_until === 'string') body.valid_until = args.valid_until;
     if (valid_until_source !== undefined) body.valid_until_source = valid_until_source;
     if (typeof args.agent_id === 'string') body.agent_id = args.agent_id;
-
-    const client = getClient();
     // Wave 2B mid_audit-to-pre_merge fix: wrap SDK call + map errors per §M-3
     // (mirrors context.ts pattern). Without this, axios-like 401/403/429
     // surface as JSON-RPC InternalError instead of Unauthorized/RateLimited.
