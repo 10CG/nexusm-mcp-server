@@ -6,12 +6,18 @@
  * Per R2 C-1 (proposal §283): `NEXUS_USER_ID` is intentionally NOT loaded
  * here — `user_id` is supplied per-call via MCP tool input args.
  *
+ * Optional: `NEXUS_DEFAULT_USER_ID` pins a server-side user_id that overrides
+ * every per-call `args.user_id`. Intended for single-user deployments where the
+ * LLM must not choose a user_id. Missing/empty means the per-call value is used.
+ *
  * SECURITY:
  *   - The Bearer token (NEXUS_API_TOKEN) MUST NEVER appear in stdout
  *     (would pollute MCP stdio transport, breaking the client),
  *     nor in stderr error messages, nor in any log line.
  *   - All diagnostic output uses env var *names* only, never values.
  */
+
+import { McpErrorCode, NexusError } from './errors.js';
 
 /**
  * Normalize a raw `NEXUS_API_URL` value so it always includes the `/v1`
@@ -61,6 +67,16 @@ export interface AuthConfig {
   readonly apiToken: string;
   /** Tenant identifier for multi-tenant routing. */
   readonly tenantId: string;
+  /**
+   * Optional server-side user_id pin loaded from `NEXUS_DEFAULT_USER_ID`.
+   *
+   * When set (non-empty after trim), `resolveUserId` returns this value for
+   * every tool call, ignoring whatever `user_id` the LLM passed. Intended for
+   * single-user deployments where the LLM must not choose a user_id.
+   *
+   * When `undefined` (env var absent or empty), per-call validation applies.
+   */
+  readonly defaultUserId?: string;
 }
 
 /**
@@ -87,6 +103,10 @@ const defaultIO: AuthIO = {
  * values are treated as missing (env var inheritance from parent shells
  * frequently produces empty values, which would otherwise produce a
  * confusing "401 Unauthorized" downstream).
+ *
+ * `NEXUS_DEFAULT_USER_ID` is optional: when present and non-empty, its trimmed
+ * value is placed in `AuthConfig.defaultUserId` and one diagnostic line is
+ * written to stderr so the operator can confirm single-user mode is active.
  */
 export function loadAuthConfig(
   env: NodeJS.ProcessEnv = process.env,
@@ -127,9 +147,45 @@ export function loadAuthConfig(
     );
   }
 
+  // Optional NEXUS_DEFAULT_USER_ID — single-user pin.
+  const rawDefaultUserId = env['NEXUS_DEFAULT_USER_ID'];
+  const defaultUserId =
+    rawDefaultUserId !== undefined && rawDefaultUserId.trim() !== ''
+      ? rawDefaultUserId.trim()
+      : undefined;
+
+  if (defaultUserId !== undefined) {
+    io.stderr.write(
+      `[nexusm-mcp-server] NEXUS_DEFAULT_USER_ID set — pinning user_id to "${defaultUserId}" for all calls (single-user mode; per-call user_id ignored).\n`,
+    );
+  }
+
   return {
     apiUrl: normalizedApiUrl,
     apiToken: values.NEXUS_API_TOKEN as string,
     tenantId: values.NEXUS_TENANT_ID as string,
+    ...(defaultUserId !== undefined ? { defaultUserId } : {}),
   };
+}
+
+/**
+ * Resolve the effective `user_id` for a tool call.
+ *
+ * - If `auth.defaultUserId` is set (single-user pin), return it unconditionally,
+ *   ignoring whatever the LLM passed in `rawArgsUserId`.
+ * - Otherwise, validate that `rawArgsUserId` is a non-empty string (after trim)
+ *   and return the trimmed value. Throws `NexusError(InvalidParams)` on failure,
+ *   matching the error shape used by the other per-field validators in the tools.
+ *
+ * @param auth     - Loaded auth config (from `loadAuthConfig`).
+ * @param rawArgsUserId - The raw `args.user_id` value from the MCP tool call.
+ */
+export function resolveUserId(auth: AuthConfig, rawArgsUserId: unknown): string {
+  if (auth.defaultUserId !== undefined) {
+    return auth.defaultUserId;
+  }
+  if (typeof rawArgsUserId !== 'string' || rawArgsUserId.trim() === '') {
+    throw new NexusError('user_id is required (non-empty string)', McpErrorCode.InvalidParams, 422);
+  }
+  return rawArgsUserId.trim();
 }

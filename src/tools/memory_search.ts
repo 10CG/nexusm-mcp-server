@@ -34,7 +34,7 @@
  */
 
 import { NexusClient } from '@nexusm/sdk';
-import { loadAuthConfig } from '../auth.js';
+import { loadAuthConfig, resolveUserId, type AuthConfig } from '../auth.js';
 import { McpErrorCode, NexusError, isAxiosLikeError, mapHttpStatusToMcpError } from '../errors.js';
 import { type ToolDefinition } from './types.js';
 
@@ -46,17 +46,19 @@ const DEFAULT_MODE: SearchMode = 'hybrid';
 
 /** Lazily-instantiated SDK client. Reset by `__resetClientForTesting`. */
 let clientSingleton: NexusClient | null = null;
+let authSingleton: AuthConfig | null = null;
 
-function getClient(): NexusClient {
-  if (clientSingleton === null) {
+function getClientAndAuth(): { client: NexusClient; auth: AuthConfig } {
+  if (clientSingleton === null || authSingleton === null) {
     const auth = loadAuthConfig();
+    authSingleton = auth;
     clientSingleton = new NexusClient({
       apiKey: auth.apiToken,
       baseUrl: auth.apiUrl,
       tenantId: auth.tenantId,
     });
   }
-  return clientSingleton;
+  return { client: clientSingleton, auth: authSingleton };
 }
 
 /**
@@ -67,6 +69,7 @@ function getClient(): NexusClient {
  */
 export function __resetClientForTesting(): void {
   clientSingleton = null;
+  authSingleton = null;
 }
 
 /** Body forwarded to the SDK. Extends `MemorySearch` with proposal-locked
@@ -118,6 +121,9 @@ export const memorySearchTool: ToolDefinition = {
     // Required field shape: rely on MCP `required` declaration + SDK Zod
     // for deep validation; here we only enforce the enum constraints that
     // the dispatcher does not check.
+    const { client, auth } = getClientAndAuth();
+    const userId = resolveUserId(auth, args.user_id);
+
     const rawMode = args.mode;
     let mode: SearchMode;
     if (rawMode === undefined) {
@@ -136,7 +142,7 @@ export const memorySearchTool: ToolDefinition = {
     }
 
     const body: MemorySearchBody = {
-      user_id: String(args.user_id),
+      user_id: userId,
       query: String(args.query),
       mode,
     };
@@ -145,8 +151,6 @@ export const memorySearchTool: ToolDefinition = {
     if (args.memory_type !== undefined && args.memory_type !== null) {
       body.memory_type = args.memory_type as 'episodic' | 'semantic' | 'procedural';
     }
-
-    const client = getClient();
     // Cast: SDK's `MemorySearch` type predates the `mode`/`score_threshold`
     // additions locked in proposal R2; the SDK Zod schema is permissive
     // (no `.strict()`) so the extra fields pass through to the HTTP body.

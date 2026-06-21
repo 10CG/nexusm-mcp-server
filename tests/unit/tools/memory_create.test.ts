@@ -38,13 +38,17 @@ vi.mock('@nexusm/sdk', () => {
   return { NexusClient };
 });
 
-vi.mock('../../../src/auth.js', () => ({
-  loadAuthConfig: vi.fn(() => ({
-    apiUrl: 'http://localhost:8001/v1',
-    apiToken: 'sk-test-token',
-    tenantId: 'tenant_test',
-  })),
-}));
+vi.mock('../../../src/auth.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../../src/auth.js')>();
+  return {
+    ...actual,
+    loadAuthConfig: vi.fn(() => ({
+      apiUrl: 'http://localhost:8001/v1',
+      apiToken: 'sk-test-token',
+      tenantId: 'tenant_test',
+    })),
+  };
+});
 
 import { memoryCreateTool, __resetClientForTesting } from '../../../src/tools/memory_create.js';
 
@@ -337,5 +341,54 @@ describe('memory_create — memory_type default', () => {
 
     const body = createMock.mock.calls[0]?.[0] as { memory_type?: string };
     expect(body.memory_type).toBe('episodic');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// NEXUS_DEFAULT_USER_ID pin — server-side user_id override
+// ---------------------------------------------------------------------------
+
+describe('memory_create — NEXUS_DEFAULT_USER_ID server-side pin', () => {
+  it('uses the pinned user_id instead of args.user_id when NEXUS_DEFAULT_USER_ID is set', async () => {
+    // Override the mock to simulate the server having a defaultUserId set.
+    const { loadAuthConfig } = await import('../../../src/auth.js');
+    vi.mocked(loadAuthConfig).mockReturnValueOnce({
+      apiUrl: 'http://localhost:8001/v1',
+      apiToken: 'sk-test-token',
+      tenantId: 'tenant_test',
+      defaultUserId: 'pinned-user',
+    });
+    __resetClientForTesting();
+    createMock.mockResolvedValueOnce({ id: 'mem_pinned', created_at: '2026-05-22T10:00:00Z' });
+
+    await memoryCreateTool.handler({
+      user_id: 'llm-chose-this-user',
+      content: 'some fact',
+    });
+
+    expect(createMock).toHaveBeenCalledTimes(1);
+    const body = createMock.mock.calls[0]?.[0] as { user_id?: string };
+    // The SDK call must use the pinned value, not the LLM-supplied value.
+    expect(body.user_id).toBe('pinned-user');
+  });
+
+  it('uses pinned user_id even when args.user_id is missing', async () => {
+    const { loadAuthConfig } = await import('../../../src/auth.js');
+    vi.mocked(loadAuthConfig).mockReturnValueOnce({
+      apiUrl: 'http://localhost:8001/v1',
+      apiToken: 'sk-test-token',
+      tenantId: 'tenant_test',
+      defaultUserId: 'pinned-user',
+    });
+    __resetClientForTesting();
+    createMock.mockResolvedValueOnce({ id: 'mem_pinned', created_at: '2026-05-22T10:00:00Z' });
+
+    // No user_id supplied at all — would normally throw InvalidParams, but pin rescues it.
+    await memoryCreateTool.handler({
+      content: 'some fact',
+    });
+
+    const body = createMock.mock.calls[0]?.[0] as { user_id?: string };
+    expect(body.user_id).toBe('pinned-user');
   });
 });

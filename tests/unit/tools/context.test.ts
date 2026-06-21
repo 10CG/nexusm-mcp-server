@@ -44,16 +44,21 @@ vi.mock('@nexusm/sdk', () => {
 });
 
 // Stub auth.ts so loadAuthConfig never touches process.env / process.exit.
-vi.mock('../../../src/auth.js', () => ({
-  loadAuthConfig: () => ({
-    apiUrl: 'http://nexus.test',
-    apiToken: 'sk-test-token',
-    tenantId: 'tenant-test',
-  }),
-}));
+// Spread importOriginal so resolveUserId (and other helpers) are preserved.
+vi.mock('../../../src/auth.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../../src/auth.js')>();
+  return {
+    ...actual,
+    loadAuthConfig: () => ({
+      apiUrl: 'http://nexus.test',
+      apiToken: 'sk-test-token',
+      tenantId: 'tenant-test',
+    }),
+  };
+});
 
 // Late import AFTER vi.mock so the mocks bind correctly.
-const { contextRetrieveTool, validateAsOf, __setClientForTesting } =
+const { contextRetrieveTool, validateAsOf, __setClientForTesting, __setAuthForTesting } =
   await import('../../../src/tools/context.js');
 const { NexusError, McpErrorCode } = await import('../../../src/errors.js');
 
@@ -81,12 +86,14 @@ const HAPPY_RESPONSE: ContextRetrieveResponse = {
 
 beforeEach(() => {
   retrieveSpy.mockReset();
-  // Force the SUT's lazy client cache to use our fake NexusClient on first call.
+  // Force the SUT's lazy client + auth cache to reset on each test.
   __setClientForTesting(null);
+  __setAuthForTesting(null);
 });
 
 afterEach(() => {
   __setClientForTesting(null);
+  __setAuthForTesting(null);
 });
 
 function getStructured(
@@ -273,5 +280,45 @@ describe('nexus.context_retrieve — banner format', () => {
     const re =
       /^## Retrieved context \(retrieve_id=[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\)\n/;
     expect(text).toMatch(re);
+  });
+});
+
+describe('nexus.context_retrieve — NEXUS_DEFAULT_USER_ID server-side pin', () => {
+  const PINNED_AUTH = {
+    apiUrl: 'http://nexus.test',
+    apiToken: 'sk-test-token',
+    tenantId: 'tenant-test',
+    defaultUserId: 'pinned-user',
+  };
+  // A minimal ContextClient stub for these tests; the real SDK is already
+  // mocked at module level above, so we just inject the fake client directly
+  // alongside the pinned auth to ensure both caches are populated together.
+  const fakeClient = { context: { retrieve: retrieveSpy } };
+
+  it('uses the pinned user_id instead of args.user_id when pin is set', async () => {
+    retrieveSpy.mockResolvedValue(HAPPY_RESPONSE);
+    __setClientForTesting(fakeClient);
+    __setAuthForTesting(PINNED_AUTH);
+
+    await contextRetrieveTool.handler({
+      user_id: 'llm-chose-this-user',
+      query: 'q',
+    });
+
+    expect(retrieveSpy).toHaveBeenCalledTimes(1);
+    const sdkArg = retrieveSpy.mock.calls[0][0] as { user_id: string };
+    expect(sdkArg.user_id).toBe('pinned-user');
+  });
+
+  it('uses pinned user_id even when args.user_id is missing', async () => {
+    retrieveSpy.mockResolvedValue(HAPPY_RESPONSE);
+    __setClientForTesting(fakeClient);
+    __setAuthForTesting(PINNED_AUTH);
+
+    // No user_id in args — would normally throw InvalidParams without a pin.
+    await contextRetrieveTool.handler({ query: 'q' });
+
+    const sdkArg = retrieveSpy.mock.calls[0][0] as { user_id: string };
+    expect(sdkArg.user_id).toBe('pinned-user');
   });
 });

@@ -9,6 +9,29 @@ Versions follow [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.1.4] — 2026-06-21
+
+### Added
+
+- **Server-side `user_id` pin via `NEXUS_DEFAULT_USER_ID`** (single-user mode):
+  Operators running a single-user deployment can now set `NEXUS_DEFAULT_USER_ID`
+  to a fixed value and the MCP server will use it as the `user_id` for every tool
+  call, regardless of whatever `user_id` the LLM supplies. This solves the dogfood
+  problem where the LLM picks inconsistent user IDs across sessions, causing
+  memories written in one session to be invisible in the next.
+
+  - `NEXUS_DEFAULT_USER_ID` is **optional** and was NOT added to `REQUIRED_ENV_VARS`.
+    When absent or empty, behavior is unchanged — per-call `args.user_id` is
+    required and validated as before.
+  - When set, one diagnostic line is written to stderr at startup confirming
+    single-user mode is active (value is printed so the operator can verify the
+    pin; token is never involved).
+  - The logic is centralised in a new exported pure helper `resolveUserId(auth,
+    rawArgsUserId)` in `src/auth.ts`. All four tool handlers call it instead of
+    reading `args.user_id` directly.
+
+---
+
 ## [0.1.3] — 2026-06-20
 
 ### Fixed
