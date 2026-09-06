@@ -10,14 +10,18 @@
  *   6. SDK returns conflict_resolution.status="resolved_keep_new" → echoed
  *   7. SDK returns conflict_resolution.status="foo" (drift) → InternalError
  *   8. memory_type defaults to "semantic" when omitted (assert SDK call body)
- *   9. id fields (nexus#400): memory_id = backend compound id, id = backend
- *      row PK, surfaced as two distinct fields with no cross-space fallback —
+ *   9. id fields (nexus#400): memory_id = backend memory_id, id = backend row
+ *      PK, surfaced as two distinct fields with no cross-space fallback —
  *      including the backend dedup stub where memory_id is NOT compound
  *
- * Mock responses mirror the real backend `MemoryResponse`, which always sends
- * BOTH `memory_id` (compound "tenant::user::uuid") and `id` (row PK uuid).
- * Mocks that sent only one of them were how the nexus#400 mislabelling stayed
- * green in CI.
+ * Mock responses mirror the real backend `MemoryResponse`, which sends BOTH
+ * `memory_id` and `id`. Mocks that sent only one of them were how the
+ * nexus#400 mislabelling stayed green in CI.
+ *
+ * `memory_id` is normally the compound form "tenant::user::uuid" — the
+ * `backendCreated()` default below — but NOT always: the backend dedup stub
+ * puts the row PK there instead (sub-defect 5, covered in case 9). Do not
+ * write new assertions that treat the compound shape as an invariant.
  *
  * SDK is mocked via `vi.mock('@nexusm/sdk', ...)` — no network, no env.
  * `loadAuthConfig` is mocked likewise so the lazy `NexusClient` build

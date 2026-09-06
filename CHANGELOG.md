@@ -13,7 +13,8 @@ Versions follow [Semantic Versioning](https://semver.org/).
 
 - **`nexus.memory_create` returned the row primary key labelled `memory_id`**
   (nexus#400 sub-defect 1). The backend `MemoryResponse` carries two
-  identifiers that are not interchangeable: `memory_id` is the compound id
+  identifiers that are not interchangeable: `memory_id` is normally the
+  compound id
   `tenant::user::uuid` (the id space `nexus.context_retrieve` and
   `nexus.memory_search` return), and `id` is the `memories` row primary key.
   The handler read `created.id ?? created.memory_id` and published the result
