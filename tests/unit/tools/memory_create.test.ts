@@ -11,7 +11,8 @@
  *   7. SDK returns conflict_resolution.status="foo" (drift) → InternalError
  *   8. memory_type defaults to "semantic" when omitted (assert SDK call body)
  *   9. id fields (nexus#400): memory_id = backend compound id, id = backend
- *      row PK, surfaced as two distinct fields with no cross-space fallback
+ *      row PK, surfaced as two distinct fields with no cross-space fallback —
+ *      including the backend dedup stub where memory_id is NOT compound
  *
  * Mock responses mirror the real backend `MemoryResponse`, which always sends
  * BOTH `memory_id` (compound "tenant::user::uuid") and `id` (row PK uuid).
@@ -418,8 +419,9 @@ describe('memory_create — id fields (nexus#400)', () => {
     expect(out.memory_id).toBe(COMPOUND);
     expect(out.id).toBe(PK);
     expect(out.memory_id).not.toBe(out.id);
-    // memory_id must be in the same id space context_retrieve / memory_search
-    // return, i.e. the compound form — never a bare uuid.
+    // The compound value survives pass-through unmangled. This asserts what
+    // the handler did to THIS response, not a backend invariant: `memory_id`
+    // is not always compound (see the dedup-stub case below).
     expect(String(out.memory_id)).toContain('::');
   });
 
@@ -467,6 +469,43 @@ describe('memory_create — id fields (nexus#400)', () => {
     // does not send it, and adding a required field would be a breaking change
     // for existing MCP clients.
     expect(memoryCreateTool.outputSchema.required).toEqual(['memory_id', 'created_at']);
+  });
+
+  it('forwards a non-compound memory_id verbatim (backend dedup stub)', async () => {
+    // nexus#400 sub-defect 5. The backend has a SECOND MemoryResponse
+    // construction site, `_build_dedup_response` (nexus
+    // src/nexus/services/memory.py), which sends `memory_id=str(<row PK>)` —
+    // not a compound id. It is reachable with the conflict resolver in
+    // mode='full' returning resolved_merge with a surviving candidate
+    // (shadow / keep_both_only force resolved_memory_id=None), i.e. exactly
+    // the mode the US-036 flag flip targets.
+    //
+    // So "memory_id always contains '::'" is NOT a backend invariant, and this
+    // handler must not enforce one: its contract is verbatim pass-through of
+    // each named field, whatever that field holds.
+    createMock.mockResolvedValueOnce({ memory_id: PK, id: PK, created_at: CREATED_AT });
+
+    const out = decodeStructured(
+      await memoryCreateTool.handler({ user_id: 'user_42', content: 'sample' }),
+    );
+
+    expect(out.memory_id).toBe(PK);
+    expect(out.id).toBe(PK);
+    // No shape sniffing: the handler neither rejects nor "corrects" a
+    // non-compound memory_id.
+    expect(String(out.memory_id)).not.toContain('::');
+  });
+
+  it('memory_id description stays conditional about the compound form', () => {
+    const memoryIdDesc =
+      (memoryCreateTool.outputSchema.properties.memory_id as { description?: string })
+        .description ?? '';
+
+    // Locks the sub-defect 5 caveat: an unconditional "this is always a
+    // compound id" would be a false statement to the LLM reading this schema.
+    expect(memoryIdDesc).toContain('Not guaranteed to be compound');
+    expect(memoryIdDesc).toContain('_build_dedup_response');
+    expect(memoryCreateTool.description).toContain('Do not assume the shape');
   });
 
   it('both id fields document which one nexus.memory_feedback takes', () => {

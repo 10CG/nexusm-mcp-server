@@ -15,6 +15,8 @@
  *   6. user_id privacy — captured SDK body MUST NOT contain `user_id`
  *      (R2.1 D-1 backend contract: PUT /feedback/{retrieve_id} derives
  *      user_id from retrieve_log, not the body).
+ *   7. item_feedback[].memory_id id-space guidance is on the schema the LLM
+ *      actually reads when it picks a value (nexus#400).
  *
  * Strategy: `vi.mock('@nexusm/sdk', ...)` replaces `NexusClient` with a
  * spyable stub. We capture both positional args of `feedback.submit` so
@@ -284,5 +286,45 @@ describe('memory_feedback — SDK error mapping (post-2B catch wrap)', () => {
     expect(nexusErr.httpStatus).toBeNull();
     expect(nexusErr.data?.['network']).toBe(true);
     expect(nexusErr.retryable).toBe(true);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Case 7 — id-space guidance lives on the field that consumes it (nexus#400)
+// ---------------------------------------------------------------------------
+describe('memory_feedback — item_feedback[].memory_id id-space guidance (nexus#400)', () => {
+  function memoryIdProp(): { format?: string; description?: string } {
+    const items = memoryFeedbackTool.inputSchema.properties.item_feedback as {
+      items: { properties: { memory_id: { format?: string; description?: string } } };
+    };
+    return items.items.properties.memory_id;
+  }
+
+  it('names both id spaces and where each one comes from', () => {
+    // The production side (nexus.memory_create's description) says which id to
+    // pass here. That prose is invisible at the moment the model fills THIS
+    // field in, which is where the choice is actually made — so the same rule
+    // has to be stated on the consuming schema too.
+    const desc = memoryIdProp().description ?? '';
+
+    expect(desc).toContain('nexus.context_retrieve');
+    expect(desc).toContain('nexus.memory_search');
+    expect(desc).toContain('nexus.memory_create');
+    // Both spaces named, with the compatibility caveat attached to the
+    // compound one.
+    expect(desc).toContain('nexus#400');
+    expect(desc).toContain('every backend version');
+    // And an explicit ban on deriving one from the other.
+    expect(desc).toContain('Never convert between the two');
+  });
+
+  it('flags its own stale `format: uuid` rather than silently contradicting it', () => {
+    const prop = memoryIdProp();
+    // The declaration is deliberately NOT changed here — that is downstream of
+    // the nexus#400 ruling (see PR #33). But a schema that says "compound ids
+    // are accepted" while declaring format:uuid must say which of the two is
+    // authoritative, or it is just a second contradiction.
+    expect(prop.format).toBe('uuid');
+    expect(prop.description ?? '').toContain('stale advisory metadata');
   });
 });

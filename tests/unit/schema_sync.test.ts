@@ -18,15 +18,27 @@
  *   nexus.memory_feedback has no Zod schema (only TS interface) — its
  *   parity check covers field-name overlap against FeedbackSubmitRequest.
  *
- * Coverage boundary (worth knowing before trusting this file): every check
+ * Coverage boundary 1 (worth knowing before trusting this file): every check
  * here compares `inputSchema` against an SDK **request** schema. Tool
  * `outputSchema` has no comparand at all — the SDK response types are
  * TypeScript-only, so nothing runtime-introspectable exists to diff them
  * against. That gap is why nexus#400 (memory_create labelling the row PK as
- * `memory_id`) stayed green here. The nexus#400 block at the bottom closes
- * the part that CAN be locked: a compile-time tie to the SDK `Memory` type,
- * enforced by `npm run type-check` because tests/ is inside
- * tsconfig.typecheck.json's include.
+ * `memory_id`) stayed green here.
+ *
+ * Coverage boundary 2, easier to miss: NONE of the `expect()` calls in this
+ * file run in CI. `vitest.unit.config.ts` excludes this file from `test:unit`
+ * (it imports the real SDK Zod schemas at runtime), and no workflow step runs
+ * a bare `vitest run` — so every assertion here is developer-invoked only
+ * (`npx vitest run tests/unit/schema_sync.test.ts`). What IS CI-enforced is
+ * compilation: `npm run type-check` compiles tests/ via
+ * tsconfig.typecheck.json, so a TYPE-level tie to an SDK type is a live lock
+ * even though the assertion around it never executes. That is exactly what
+ * the nexus#400 block at the bottom is, and all it is.
+ *
+ * Corollary: anything that needs a RUNTIME gate belongs in
+ * tests/unit/tools/*.test.ts, which `test:unit` does run. The nexus#400
+ * outputSchema `format` / `required` assertions live there
+ * (tests/unit/tools/memory_create.test.ts) for that reason.
  */
 
 import { describe, expect, it } from 'vitest';
@@ -194,28 +206,23 @@ describe('nexus.memory_feedback ↔ FeedbackSubmitRequest (no SDK Zod, field-nam
 
 describe('nexus.memory_create outputSchema ↔ SDK Memory id fields (nexus#400)', () => {
   it('SDK Memory still declares both id spaces (compile-time lock)', () => {
-    // Compile-time assertion, not a runtime one: if the SDK ever renames or
-    // drops either field, these two indexed accesses stop resolving and
-    // `npm run type-check` fails. Runtime introspection is impossible —
+    // The lock is the TYPE ANNOTATION, not the expect() below it. If the SDK
+    // renames or drops either field, these two indexed accesses stop
+    // resolving and `npm run type-check` — a real CI step — fails. The
+    // expect() calls do NOT run in CI (see "Coverage boundary 2" at the top of
+    // this file); they are here only so the assignments have a use and the
+    // body is a valid test. Runtime introspection is impossible anyway:
     // Memory is an interface and is erased.
     const compound: Memory['memory_id'] = 'tenant::user::00000000-0000-0000-0000-000000000001';
     const pk: Memory['id'] = '00000000-0000-0000-0000-000000000001';
 
     expect(typeof compound).toBe('string');
     expect(typeof pk).toBe('string');
-    // The compound form carries separators; the PK never does. This is the
-    // property that makes them non-interchangeable at the feedback endpoint.
-    expect(compound).toContain('::');
-    expect(pk).not.toContain('::');
   });
 
-  it('outputSchema exposes both backend id fields under their backend names', () => {
-    const props = memoryCreateTool.outputSchema.properties;
-    expect(Object.keys(props)).toEqual(expect.arrayContaining(['memory_id', 'id']));
-
-    // memory_id is the compound id — a string, NOT format:uuid.
-    expect((props.memory_id as { type?: string; format?: string }).format).toBeUndefined();
-    // id is the row PK.
-    expect((props.id as { format?: string }).format).toBe('uuid');
-  });
+  // The outputSchema `format` / `required` assertions that used to sit here
+  // were runtime-only, i.e. never executed by any CI step, while identical
+  // assertions already run under `test:unit` in
+  // tests/unit/tools/memory_create.test.ts. They were removed rather than
+  // kept as an unexecuted duplicate.
 });

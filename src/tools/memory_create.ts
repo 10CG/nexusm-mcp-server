@@ -28,18 +28,32 @@
  * Output id fields (nexus#400): the backend `MemoryResponse` carries TWO
  * identifiers and they are NOT interchangeable —
  *
- *   - `memory_id` : compound id `tenant::user::uuid`
+ *   - `memory_id` : NORMALLY the compound id `tenant::user::uuid`
  *                   (`schemas/memory.py` MemoryResponse.memory_id, documented
- *                   as "(compound_id)"). This is the SAME id space that
+ *                   as "(compound_id)"). That is the SAME id space that
  *                   `nexus.context_retrieve` and `nexus.memory_search` return.
  *   - `id`        : the `memories` table row PK (uuid4).
  *
- * The uuid segment inside `memory_id` is minted independently by
+ * The uuid segment inside a compound `memory_id` is minted independently by
  * `CompoundID.generate()` and is NOT the PK — never parse it out and use it
  * as one. This tool used to return `created.id ?? created.memory_id` under
  * the name `memory_id`, i.e. the PK wearing the compound id's label; that
  * mislabelling is nexus#400 sub-defect 1. Both fields are now surfaced
  * verbatim, additively, with NO cross-space fallback between them.
+ *
+ * "NORMALLY" is load-bearing. The backend has a SECOND `MemoryResponse`
+ * construction site whose `memory_id` is NOT a compound id: the idempotent
+ * dedup stub `_build_dedup_response` (nexus `src/nexus/services/memory.py`)
+ * sends `memory_id=str(<row PK>)`, so both fields come back equal and both
+ * are bare uuids. Reachable only with the ConflictResolver in mode='full'
+ * returning `resolved_merge` with a surviving candidate (shadow and
+ * keep_both_only force `resolved_memory_id=None`), i.e. exactly the mode
+ * US-036's flag flip targets. Registered as nexus#400 sub-defect 5.
+ *
+ * That costs this handler nothing — it forwards whatever each field holds —
+ * but it does mean two things are forbidden here: asserting that `memory_id`
+ * is compound, and inferring the id space from a value's shape. Read the
+ * field you need by name; do not pattern-match the value.
  *
  * Client construction matches the sibling pattern in `memory_search.ts`:
  * lazy `NexusClient` singleton from `loadAuthConfig()`, with a
@@ -145,7 +159,8 @@ export const memoryCreateTool: ToolDefinition = {
   name: NAME,
   description:
     "Persist a new memory. Use when user explicitly asks to 'remember X' or when storing structured facts (preferences, decisions, code snippets with language tag). Set memory_type to 'episodic' for events, 'semantic' for facts, 'procedural' for how-tos. " +
-    "Returns BOTH identifiers the API uses: 'memory_id' (compound 'tenant::user::uuid' — same id space as nexus.context_retrieve and nexus.memory_search) and 'id' (bare uuid row primary key). " +
+    "Returns BOTH identifiers the API sends: 'memory_id' (normally the compound 'tenant::user::uuid' — the id space nexus.context_retrieve and nexus.memory_search return) and 'id' (bare uuid row primary key). " +
+    "Do not assume the shape: on the backend's idempotent-dedup path 'memory_id' carries the row primary key instead, and then the two fields are equal. Read them by name, never by value shape. " +
     "For nexus.memory_feedback item_feedback[].memory_id, pass 'id': the primary key is accepted by every backend version, while the compound form is only accepted from the nexus#400 backend fix onward.",
   inputSchema: {
     type: 'object',
@@ -184,9 +199,13 @@ export const memoryCreateTool: ToolDefinition = {
       memory_id: {
         type: 'string',
         description:
-          "Compound memory id 'tenant::user::uuid' — verbatim backend MemoryResponse.memory_id. " +
-          'Same id space as the memory_id returned by nexus.context_retrieve and nexus.memory_search. ' +
-          'NOT a uuid (the `format: uuid` this field used to declare was wrong — nexus#400). ' +
+          'Verbatim backend MemoryResponse.memory_id. Normally the compound memory id ' +
+          "'tenant::user::uuid' — the same id space nexus.context_retrieve and nexus.memory_search return. " +
+          'Not guaranteed to be compound: the backend idempotent-dedup stub (_build_dedup_response, ' +
+          "reachable with the conflict resolver in mode='full') puts the row primary key in this field, and " +
+          'then memory_id equals id. Hence no `format: uuid` here (the compound form is not a uuid, and the ' +
+          'declaration this field used to carry was wrong — nexus#400), and hence: do not infer which id ' +
+          'space a value belongs to from its shape. ' +
           'Accepted by nexus.memory_feedback only on backends carrying the nexus#400 fix.',
       },
       id: {

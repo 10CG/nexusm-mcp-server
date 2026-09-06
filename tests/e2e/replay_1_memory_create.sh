@@ -6,7 +6,11 @@
 # with memory_type='semantic' (preferences are semantic facts, not events).
 #
 # Pass criteria:
-#   - Server returns structured result with memory_id (UUID) + created_at
+#   - Server returns structured result with memory_id + id + created_at.
+#     memory_id is normally the compound form 'tenant::user::uuid' (NOT a bare
+#     UUID -- nexus#400); `id` is the bare-UUID row primary key. On the backend
+#     idempotent-dedup path memory_id carries the PK too, so the two are equal.
+#     Field meanings are authoritative in memoryCreateTool.outputSchema.
 #   - mcp-call.mjs exits 0
 #
 # Fail modes:
@@ -34,4 +38,7 @@ node lib/mcp-call.mjs nexus.memory_create '{
 
 echo
 echo "=== PASS: memory_create returned a result ==="
-echo "Manual check: result above should contain memory_id (UUID) + created_at (RFC 3339)"
+echo "Manual check: result above should contain memory_id (normally the"
+echo "                compound 'tenant::user::uuid') + id (bare UUID row primary"
+echo "                key) + created_at (RFC 3339). A bare-UUID memory_id is only"
+echo "                expected on the backend idempotent-dedup path."

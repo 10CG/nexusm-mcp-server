@@ -230,7 +230,24 @@ export const memoryFeedbackTool: ToolDefinition = {
         items: {
           type: 'object',
           properties: {
-            memory_id: { type: 'string', format: 'uuid' },
+            memory_id: {
+              type: 'string',
+              format: 'uuid',
+              description:
+                'Which memory this rating is about. TWO id spaces reach this field and the backend ' +
+                'accepts both (nexus daf02a9 widened it from UUID to str): the compound id ' +
+                "'tenant::user::uuid' returned by nexus.context_retrieve and nexus.memory_search, and " +
+                'the bare uuid row primary key returned as `id` by nexus.memory_create. ' +
+                'Rating a memory you just RETRIEVED — the case this tool exists for — means passing the ' +
+                'compound memory_id straight through from the retrieve output; that requires a backend ' +
+                'carrying the nexus#400 widening. Rating one you just CREATED means passing its `id`, ' +
+                'which every backend version accepts. ' +
+                'Never convert between the two: the uuid segment of a compound id is minted independently ' +
+                'and is not the primary key. Pass a value through verbatim from the output that gave it ' +
+                'to you. ' +
+                'The `format: uuid` declared above is stale advisory metadata (this server validates only ' +
+                'non-empty string); it is left untouched pending the nexus#400 ruling.',
+            },
             useful: { type: 'boolean' },
             reason: { type: 'string', nullable: true, maxLength: 255 },
           },

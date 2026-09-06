@@ -22,6 +22,14 @@ Versions follow [Semantic Versioning](https://semver.org/).
   independently by the backend's `CompoundID.generate()` and is not the
   primary key, so the two can never be derived from one another.
 
+  Caveat carried in the field descriptions: `memory_id` is *normally* the
+  compound id, not always. The backend's idempotent-dedup stub
+  (`_build_dedup_response`, reachable with the conflict resolver in
+  `mode='full'`) puts the row primary key in `memory_id`, making both fields
+  equal — registered as nexus#400 sub-defect 5. Both this tool and any caller
+  must read the fields by name and never infer an id space from a value's
+  shape.
+
 ### Added
 
 - **`id` in the `nexus.memory_create` output** — the row primary key, additive
@@ -40,6 +48,15 @@ Versions follow [Semantic Versioning](https://semver.org/).
 - `nexus.memory_create` `outputSchema.memory_id` no longer declares
   `format: uuid` — the compound form is not a uuid. `required` is unchanged
   (`memory_id`, `created_at`), so the change is additive for MCP clients.
+
+- `nexus.memory_feedback` `item_feedback[].memory_id` gained a description
+  naming both id spaces it accepts (compound id from `nexus.context_retrieve`
+  / `nexus.memory_search`, needing a backend with the nexus#400 widening; row
+  primary key from `nexus.memory_create`'s `id`, accepted by every backend
+  version), banning conversion between them, and flagging its own
+  `format: uuid` as stale advisory metadata. Documentation only — the
+  declaration itself is untouched pending the nexus#400 ruling, and the
+  handler's validation (non-empty string) is unchanged.
 
 ## [0.1.4] — 2026-06-21
 
