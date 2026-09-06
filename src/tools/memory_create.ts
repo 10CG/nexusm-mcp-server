@@ -25,6 +25,22 @@
  *      CHECK). Any other value → `InternalError` (treat as backend drift
  *      or server bug; do NOT silently echo).
  *
+ * Output id fields (nexus#400): the backend `MemoryResponse` carries TWO
+ * identifiers and they are NOT interchangeable —
+ *
+ *   - `memory_id` : compound id `tenant::user::uuid`
+ *                   (`schemas/memory.py` MemoryResponse.memory_id, documented
+ *                   as "(compound_id)"). This is the SAME id space that
+ *                   `nexus.context_retrieve` and `nexus.memory_search` return.
+ *   - `id`        : the `memories` table row PK (uuid4).
+ *
+ * The uuid segment inside `memory_id` is minted independently by
+ * `CompoundID.generate()` and is NOT the PK — never parse it out and use it
+ * as one. This tool used to return `created.id ?? created.memory_id` under
+ * the name `memory_id`, i.e. the PK wearing the compound id's label; that
+ * mislabelling is nexus#400 sub-defect 1. Both fields are now surfaced
+ * verbatim, additively, with NO cross-space fallback between them.
+ *
  * Client construction matches the sibling pattern in `memory_search.ts`:
  * lazy `NexusClient` singleton from `loadAuthConfig()`, with a
  * `__resetClientForTesting()` seam so `vi.mock('@nexusm/sdk', ...)` can
@@ -128,7 +144,9 @@ function validateConflictResolution(cr: unknown): ConflictResolutionEcho | null 
 export const memoryCreateTool: ToolDefinition = {
   name: NAME,
   description:
-    "Persist a new memory. Use when user explicitly asks to 'remember X' or when storing structured facts (preferences, decisions, code snippets with language tag). Set memory_type to 'episodic' for events, 'semantic' for facts, 'procedural' for how-tos.",
+    "Persist a new memory. Use when user explicitly asks to 'remember X' or when storing structured facts (preferences, decisions, code snippets with language tag). Set memory_type to 'episodic' for events, 'semantic' for facts, 'procedural' for how-tos. " +
+    "Returns BOTH identifiers the API uses: 'memory_id' (compound 'tenant::user::uuid' — same id space as nexus.context_retrieve and nexus.memory_search) and 'id' (bare uuid row primary key). " +
+    "For nexus.memory_feedback item_feedback[].memory_id, pass 'id': the primary key is accepted by every backend version, while the compound form is only accepted from the nexus#400 backend fix onward.",
   inputSchema: {
     type: 'object',
     properties: {
@@ -163,7 +181,23 @@ export const memoryCreateTool: ToolDefinition = {
   outputSchema: {
     type: 'object',
     properties: {
-      memory_id: { type: 'string', format: 'uuid' },
+      memory_id: {
+        type: 'string',
+        description:
+          "Compound memory id 'tenant::user::uuid' — verbatim backend MemoryResponse.memory_id. " +
+          'Same id space as the memory_id returned by nexus.context_retrieve and nexus.memory_search. ' +
+          'NOT a uuid (the `format: uuid` this field used to declare was wrong — nexus#400). ' +
+          'Accepted by nexus.memory_feedback only on backends carrying the nexus#400 fix.',
+      },
+      id: {
+        type: 'string',
+        format: 'uuid',
+        description:
+          'Row primary key — verbatim backend MemoryResponse.id. This is the value to pass to ' +
+          'nexus.memory_feedback item_feedback[].memory_id: it is accepted by every backend version. ' +
+          'It is NOT the uuid segment of memory_id (CompoundID.generate() mints that independently). ' +
+          'Additive in nexus#400; omitted if the backend does not send it, hence not in `required`.',
+      },
       created_at: { type: 'string', format: 'date-time' },
       conflict_resolution: {
         type: 'object',
@@ -297,9 +331,18 @@ export const memoryCreateTool: ToolDefinition = {
     // ---- conflict_resolution drift guard (proposal §ai R2 D-10) ----
     const conflict = validateConflictResolution(created.conflict_resolution);
 
-    const memory_id = (created.id ?? created.memory_id) as string | undefined;
+    // ---- id fields (nexus#400 sub-defect 1) ----
+    // Read each backend field under its own name. The previous
+    // `created.id ?? created.memory_id` returned the row PK labelled
+    // `memory_id`, which put this tool in a different id space from
+    // context_retrieve / memory_search. Deliberately NO cross-space
+    // fallback: a silent fallback is exactly what made the original
+    // mix-up invisible, so a missing field is reported as missing.
+    const memory_id = typeof created.memory_id === 'string' ? created.memory_id : undefined;
+    const id = typeof created.id === 'string' ? created.id : undefined;
     const created_at = created.created_at as string | undefined;
     const output: Record<string, unknown> = { memory_id, created_at };
+    if (id !== undefined) output.id = id;
     if (conflict !== null) output.conflict_resolution = conflict;
 
     return {

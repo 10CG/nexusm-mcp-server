@@ -17,10 +17,21 @@
  *
  *   nexus.memory_feedback has no Zod schema (only TS interface) — its
  *   parity check covers field-name overlap against FeedbackSubmitRequest.
+ *
+ * Coverage boundary (worth knowing before trusting this file): every check
+ * here compares `inputSchema` against an SDK **request** schema. Tool
+ * `outputSchema` has no comparand at all — the SDK response types are
+ * TypeScript-only, so nothing runtime-introspectable exists to diff them
+ * against. That gap is why nexus#400 (memory_create labelling the row PK as
+ * `memory_id`) stayed green here. The nexus#400 block at the bottom closes
+ * the part that CAN be locked: a compile-time tie to the SDK `Memory` type,
+ * enforced by `npm run type-check` because tests/ is inside
+ * tsconfig.typecheck.json's include.
  */
 
 import { describe, expect, it } from 'vitest';
 import { contextRequestSchema, memoryCreateSchema, memorySearchSchema } from '@nexusm/sdk';
+import type { Memory } from '@nexusm/sdk';
 
 import { contextRetrieveTool } from '../../src/tools/context.js';
 import { memoryCreateTool } from '../../src/tools/memory_create.js';
@@ -174,5 +185,37 @@ describe('nexus.memory_feedback ↔ FeedbackSubmitRequest (no SDK Zod, field-nam
       maxLength: number;
     };
     expect(expectedMissing.maxLength).toBe(2000);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// nexus.memory_create outputSchema ↔ SDK Memory id fields (nexus#400)
+// ---------------------------------------------------------------------------
+
+describe('nexus.memory_create outputSchema ↔ SDK Memory id fields (nexus#400)', () => {
+  it('SDK Memory still declares both id spaces (compile-time lock)', () => {
+    // Compile-time assertion, not a runtime one: if the SDK ever renames or
+    // drops either field, these two indexed accesses stop resolving and
+    // `npm run type-check` fails. Runtime introspection is impossible —
+    // Memory is an interface and is erased.
+    const compound: Memory['memory_id'] = 'tenant::user::00000000-0000-0000-0000-000000000001';
+    const pk: Memory['id'] = '00000000-0000-0000-0000-000000000001';
+
+    expect(typeof compound).toBe('string');
+    expect(typeof pk).toBe('string');
+    // The compound form carries separators; the PK never does. This is the
+    // property that makes them non-interchangeable at the feedback endpoint.
+    expect(compound).toContain('::');
+    expect(pk).not.toContain('::');
+  });
+
+  it('outputSchema exposes both backend id fields under their backend names', () => {
+    const props = memoryCreateTool.outputSchema.properties;
+    expect(Object.keys(props)).toEqual(expect.arrayContaining(['memory_id', 'id']));
+
+    // memory_id is the compound id — a string, NOT format:uuid.
+    expect((props.memory_id as { type?: string; format?: string }).format).toBeUndefined();
+    // id is the row PK.
+    expect((props.id as { format?: string }).format).toBe('uuid');
   });
 });

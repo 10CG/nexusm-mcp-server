@@ -10,6 +10,13 @@
  *   6. SDK returns conflict_resolution.status="resolved_keep_new" → echoed
  *   7. SDK returns conflict_resolution.status="foo" (drift) → InternalError
  *   8. memory_type defaults to "semantic" when omitted (assert SDK call body)
+ *   9. id fields (nexus#400): memory_id = backend compound id, id = backend
+ *      row PK, surfaced as two distinct fields with no cross-space fallback
+ *
+ * Mock responses mirror the real backend `MemoryResponse`, which always sends
+ * BOTH `memory_id` (compound "tenant::user::uuid") and `id` (row PK uuid).
+ * Mocks that sent only one of them were how the nexus#400 mislabelling stayed
+ * green in CI.
  *
  * SDK is mocked via `vi.mock('@nexusm/sdk', ...)` — no network, no env.
  * `loadAuthConfig` is mocked likewise so the lazy `NexusClient` build
@@ -81,15 +88,26 @@ function decodeStructured(result: { structuredContent?: unknown }): Record<strin
   return result.structuredContent as Record<string, unknown>;
 }
 
+/** Row primary key — backend `MemoryResponse.id`. */
+const PK = '00000000-0000-0000-0000-000000000001';
+/**
+ * Compound id — backend `MemoryResponse.memory_id`. Its uuid segment is minted
+ * independently by CompoundID.generate(), so it deliberately differs from PK.
+ */
+const COMPOUND = 'tenant_test::user_42::9c1f7a2e-4d3b-4a10-9f55-6b1c2d3e4f50';
+const CREATED_AT = '2026-05-22T10:00:00Z';
+
+/** A backend-shaped POST /v1/memories response (both id spaces present). */
+function backendCreated(extra: Record<string, unknown> = {}): Record<string, unknown> {
+  return { memory_id: COMPOUND, id: PK, created_at: CREATED_AT, ...extra };
+}
+
 // ---------------------------------------------------------------------------
 // Case 1 — Happy path
 // ---------------------------------------------------------------------------
 describe('memory_create handler — happy path', () => {
-  it('returns memory_id + created_at when SDK succeeds with no conflict', async () => {
-    createMock.mockResolvedValueOnce({
-      id: '00000000-0000-0000-0000-000000000001',
-      created_at: '2026-05-22T10:00:00Z',
-    });
+  it('returns memory_id + id + created_at when SDK succeeds with no conflict', async () => {
+    createMock.mockResolvedValueOnce(backendCreated());
 
     const result = await memoryCreateTool.handler({
       user_id: 'user_42',
@@ -98,8 +116,9 @@ describe('memory_create handler — happy path', () => {
     });
 
     const out = decodeStructured(result);
-    expect(out.memory_id).toBe('00000000-0000-0000-0000-000000000001');
-    expect(out.created_at).toBe('2026-05-22T10:00:00Z');
+    expect(out.memory_id).toBe(COMPOUND);
+    expect(out.id).toBe(PK);
+    expect(out.created_at).toBe(CREATED_AT);
     expect(out.conflict_resolution).toBeUndefined();
     expect(createMock).toHaveBeenCalledTimes(1);
   });
@@ -118,10 +137,7 @@ describe('memory_create — valid_until_source enum (R2.1 LOCKED, 5 values)', ()
   ] as const;
 
   it.each(VALUES)('accepts valid_until_source="%s"', async (value) => {
-    createMock.mockResolvedValueOnce({
-      id: 'mem_1',
-      created_at: '2026-05-22T10:00:00Z',
-    });
+    createMock.mockResolvedValueOnce(backendCreated());
 
     await memoryCreateTool.handler({
       user_id: 'user_42',
@@ -189,7 +205,7 @@ describe('memory_create — metadata key cap', () => {
   });
 
   it('accepts metadata with exactly 10 keys (boundary)', async () => {
-    createMock.mockResolvedValueOnce({ id: 'mem_1', created_at: '2026-05-22T10:00:00Z' });
+    createMock.mockResolvedValueOnce(backendCreated());
     const metadata: Record<string, string> = {};
     for (let i = 1; i <= 10; i++) metadata[`k${i}`] = `v${i}`;
 
@@ -224,7 +240,7 @@ describe('memory_create — metadata value length cap', () => {
   });
 
   it('accepts metadata value of exactly 200 chars (boundary)', async () => {
-    createMock.mockResolvedValueOnce({ id: 'mem_1', created_at: '2026-05-22T10:00:00Z' });
+    createMock.mockResolvedValueOnce(backendCreated());
 
     await memoryCreateTool.handler({
       user_id: 'user_42',
@@ -241,14 +257,14 @@ describe('memory_create — metadata value length cap', () => {
 // ---------------------------------------------------------------------------
 describe('memory_create — conflict_resolution echo (US-036)', () => {
   it('echoes status="resolved_keep_new" from SDK response verbatim', async () => {
-    createMock.mockResolvedValueOnce({
-      id: 'mem_1',
-      created_at: '2026-05-22T10:00:00Z',
-      conflict_resolution: {
-        status: 'resolved_keep_new',
-        superseded_memory_ids: ['mem_old_1'],
-      },
-    });
+    createMock.mockResolvedValueOnce(
+      backendCreated({
+        conflict_resolution: {
+          status: 'resolved_keep_new',
+          superseded_memory_ids: ['mem_old_1'],
+        },
+      }),
+    );
 
     const result = await memoryCreateTool.handler({
       user_id: 'user_42',
@@ -275,11 +291,7 @@ describe('memory_create — conflict_resolution echo (US-036)', () => {
       'no_conflict',
     ] as const;
     for (const status of STATUSES) {
-      createMock.mockResolvedValueOnce({
-        id: 'mem_1',
-        created_at: '2026-05-22T10:00:00Z',
-        conflict_resolution: { status },
-      });
+      createMock.mockResolvedValueOnce(backendCreated({ conflict_resolution: { status } }));
       const result = await memoryCreateTool.handler({
         user_id: 'user_42',
         content: 'sample',
@@ -295,11 +307,7 @@ describe('memory_create — conflict_resolution echo (US-036)', () => {
 // ---------------------------------------------------------------------------
 describe('memory_create — conflict_resolution status drift', () => {
   it('rejects unknown status="foo" from SDK with InternalError (backend drift)', async () => {
-    createMock.mockResolvedValueOnce({
-      id: 'mem_1',
-      created_at: '2026-05-22T10:00:00Z',
-      conflict_resolution: { status: 'foo' },
-    });
+    createMock.mockResolvedValueOnce(backendCreated({ conflict_resolution: { status: 'foo' } }));
 
     const err = await expectThrowsNexusError(() =>
       memoryCreateTool.handler({
@@ -318,7 +326,7 @@ describe('memory_create — conflict_resolution status drift', () => {
 // ---------------------------------------------------------------------------
 describe('memory_create — memory_type default', () => {
   it('defaults memory_type to "semantic" when omitted (asserted on SDK call body)', async () => {
-    createMock.mockResolvedValueOnce({ id: 'mem_1', created_at: '2026-05-22T10:00:00Z' });
+    createMock.mockResolvedValueOnce(backendCreated());
 
     await memoryCreateTool.handler({
       user_id: 'user_42',
@@ -331,7 +339,7 @@ describe('memory_create — memory_type default', () => {
   });
 
   it('honours explicit memory_type when supplied', async () => {
-    createMock.mockResolvedValueOnce({ id: 'mem_1', created_at: '2026-05-22T10:00:00Z' });
+    createMock.mockResolvedValueOnce(backendCreated());
 
     await memoryCreateTool.handler({
       user_id: 'user_42',
@@ -359,7 +367,7 @@ describe('memory_create — NEXUS_DEFAULT_USER_ID server-side pin', () => {
       defaultUserId: 'pinned-user',
     });
     __resetClientForTesting();
-    createMock.mockResolvedValueOnce({ id: 'mem_pinned', created_at: '2026-05-22T10:00:00Z' });
+    createMock.mockResolvedValueOnce(backendCreated());
 
     await memoryCreateTool.handler({
       user_id: 'llm-chose-this-user',
@@ -381,7 +389,7 @@ describe('memory_create — NEXUS_DEFAULT_USER_ID server-side pin', () => {
       defaultUserId: 'pinned-user',
     });
     __resetClientForTesting();
-    createMock.mockResolvedValueOnce({ id: 'mem_pinned', created_at: '2026-05-22T10:00:00Z' });
+    createMock.mockResolvedValueOnce(backendCreated());
 
     // No user_id supplied at all — would normally throw InvalidParams, but pin rescues it.
     await memoryCreateTool.handler({
@@ -390,5 +398,84 @@ describe('memory_create — NEXUS_DEFAULT_USER_ID server-side pin', () => {
 
     const body = createMock.mock.calls[0]?.[0] as { user_id?: string };
     expect(body.user_id).toBe('pinned-user');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Case 9 — id fields: two id spaces, surfaced separately (nexus#400)
+// ---------------------------------------------------------------------------
+
+describe('memory_create — id fields (nexus#400)', () => {
+  it('surfaces memory_id (compound) and id (PK) as two distinct values', async () => {
+    createMock.mockResolvedValueOnce(backendCreated());
+
+    const out = decodeStructured(
+      await memoryCreateTool.handler({ user_id: 'user_42', content: 'sample' }),
+    );
+
+    // Regression lock: before the fix, memory_id carried the row PK. The two
+    // fields must now differ, and each must carry its own backend value.
+    expect(out.memory_id).toBe(COMPOUND);
+    expect(out.id).toBe(PK);
+    expect(out.memory_id).not.toBe(out.id);
+    // memory_id must be in the same id space context_retrieve / memory_search
+    // return, i.e. the compound form — never a bare uuid.
+    expect(String(out.memory_id)).toContain('::');
+  });
+
+  it('does NOT fall back to the PK when the backend omits memory_id', async () => {
+    createMock.mockResolvedValueOnce({ id: PK, created_at: CREATED_AT });
+
+    const out = decodeStructured(
+      await memoryCreateTool.handler({ user_id: 'user_42', content: 'sample' }),
+    );
+
+    // A cross-space fallback is what hid the original mix-up: a bare uuid
+    // labelled memory_id looks fine until someone feeds it to an endpoint
+    // expecting the other space.
+    expect(out.memory_id).toBeUndefined();
+    expect(out.id).toBe(PK);
+  });
+
+  it('omits id (rather than borrowing memory_id) when the backend omits id', async () => {
+    createMock.mockResolvedValueOnce({ memory_id: COMPOUND, created_at: CREATED_AT });
+
+    const out = decodeStructured(
+      await memoryCreateTool.handler({ user_id: 'user_42', content: 'sample' }),
+    );
+
+    expect(out.memory_id).toBe(COMPOUND);
+    expect('id' in out).toBe(false);
+  });
+
+  it('outputSchema: memory_id is a plain string (no format:uuid), id is uuid', () => {
+    const props = memoryCreateTool.outputSchema.properties;
+    const memoryIdProp = props.memory_id as { type?: string; format?: string };
+    const idProp = props.id as { type?: string; format?: string };
+
+    expect(memoryIdProp.type).toBe('string');
+    // The compound form is not a uuid — declaring format:uuid was the schema
+    // half of nexus#400 sub-defect 1.
+    expect(memoryIdProp.format).toBeUndefined();
+
+    expect(idProp.type).toBe('string');
+    expect(idProp.format).toBe('uuid');
+  });
+
+  it('outputSchema: adding id is additive — required is unchanged', () => {
+    // `id` is deliberately NOT required: the handler omits it when the backend
+    // does not send it, and adding a required field would be a breaking change
+    // for existing MCP clients.
+    expect(memoryCreateTool.outputSchema.required).toEqual(['memory_id', 'created_at']);
+  });
+
+  it('both id fields document which one nexus.memory_feedback takes', () => {
+    const props = memoryCreateTool.outputSchema.properties;
+    const memoryIdDesc = (props.memory_id as { description?: string }).description ?? '';
+    const idDesc = (props.id as { description?: string }).description ?? '';
+
+    expect(memoryIdDesc).toContain('nexus#400');
+    expect(idDesc).toContain('nexus.memory_feedback');
+    expect(memoryCreateTool.description).toContain('nexus.memory_feedback');
   });
 });

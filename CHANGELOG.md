@@ -9,6 +9,38 @@ Versions follow [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Fixed
+
+- **`nexus.memory_create` returned the row primary key labelled `memory_id`**
+  (nexus#400 sub-defect 1). The backend `MemoryResponse` carries two
+  identifiers that are not interchangeable: `memory_id` is the compound id
+  `tenant::user::uuid` (the id space `nexus.context_retrieve` and
+  `nexus.memory_search` return), and `id` is the `memories` row primary key.
+  The handler read `created.id ?? created.memory_id` and published the result
+  as `memory_id`, so this tool spoke a different id space from every other
+  tool in the server. The uuid segment inside the compound id is minted
+  independently by the backend's `CompoundID.generate()` and is not the
+  primary key, so the two can never be derived from one another.
+
+### Added
+
+- **`id` in the `nexus.memory_create` output** — the row primary key, additive
+  alongside the now-correct `memory_id`. Both identifiers the API hands out
+  are surfaced under their backend names, so a caller can pick the one the
+  endpoint it is calling accepts. `id` is deliberately not in `required`: the
+  handler omits it when the backend does not send it rather than substituting
+  the other id space.
+
+  For `nexus.memory_feedback`, pass `id`: the primary key is accepted by every
+  backend version, whereas the compound form is only accepted from the
+  nexus#400 backend fix onward.
+
+### Changed
+
+- `nexus.memory_create` `outputSchema.memory_id` no longer declares
+  `format: uuid` — the compound form is not a uuid. `required` is unchanged
+  (`memory_id`, `created_at`), so the change is additive for MCP clients.
+
 ## [0.1.4] — 2026-06-21
 
 ### Added
