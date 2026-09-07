@@ -32,9 +32,9 @@
   "scripts": {
     "build": "tsc && chmod +x dist/index.js",
     "type-check": "tsc -p tsconfig.typecheck.json",
-    "test": "vitest run",
+    "test": "npm run test:unit && npm run test:integration",
     "test:unit": "vitest run --config vitest.unit.config.ts",
-    "test:watch": "vitest",
+    "test:watch": "vitest --config vitest.unit.config.ts",
     "test:integration": "vitest run --config vitest.integration.config.ts",
     "lint": "eslint src/ tests/ && prettier --check src/ tests/"
   },

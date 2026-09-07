@@ -321,7 +321,7 @@ If 10CG npm org access lost (admin departure / account compromise):
 |------|---------|---------|-----------------|
 | `lint` | push, PR | eslint + prettier | Fix code style; check `.eslintrc` |
 | `tsc` | push, PR | TypeScript type-check | Fix type errors; SDK Zod schema drift may indicate need to bump @nexusm/sdk |
-| `test:unit` | push, PR | vitest unit tests | Local repro: `npm test` |
+| `test:unit` | push, PR | vitest unit tests | Local repro: `npm run test:unit` (`npm test` runs unit + integration, i.e. the whole CI test surface) |
 | `test:integration` | push, PR | mcp-cli E2E (3 platform matrix Linux × Node 18/20 + macOS × Node 20) | Check matrix log; Aether runner Windows OOS Phase 1 |
 | `schema_sync` | push, PR | MCP inputSchema vs @nexusm/sdk Zod schema | Update one or the other to match |
 | `publish` | tag `v*` | npm publish + Forgejo release | Per §1 failure modes |
