@@ -9,6 +9,49 @@ Versions follow [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Fixed
+
+- **Unit tests no longer inherit the host machine's `NEXUS_*` environment**
+  (issue #34). On a dev machine that has the nexus MCP plugin configured, the
+  shell exports `NEXUS_API_URL` / `NEXUS_API_TOKEN` / `NEXUS_TENANT_ID` /
+  `NEXUS_DEFAULT_USER_ID`; the vitest workers inherited them, so the code under
+  test read the developer's live config instead of the fixtures the test set up.
+  `npm run test:unit` was red on such machines (2 failed / 129 passed in
+  `tests/unit/tools/memory_search.test.ts` — `resolveUserId` returned the host
+  pin and overrode the `user_id` the test passed) while staying green on CI,
+  where the runner environment is clean.
+
+  Fix is structural rather than per-variable: `tests/setup/env-isolation.ts`
+  strips every `NEXUS_*` / `MCP_*` key **by prefix** before each test file loads,
+  then installs a small controlled baseline for the three vars `loadAuthConfig()`
+  requires. A new variable added to `src/` later is covered automatically.
+  Behaviour-changing optional vars (`NEXUS_DEFAULT_USER_ID`,
+  `NEXUS_METRICS_PORT`, `NEXUS_MCP_*`) are deliberately left unset so tests
+  exercise the default branches.
+
+  `tests/unit/env_isolation.test.ts` locks the isolation, including a scan of
+  `src/**` that fails if anyone adds an environment-variable read the policy
+  does not cover.
+
+  Test-only change — no runtime/`dist/` impact.
+
+- **Integration tests: same isolation, with `NEXUS_TEST_*` preserved** (those are
+  the suite's deliberate inputs, injected as Forgejo secrets in CI). This also
+  closes a latent leak in `tests/integration/mcp_protocol.test.ts`, which built
+  the spawned server's environment from `{ ...process.env, <3 explicit
+  overrides> }` — a host `NEXUS_DEFAULT_USER_ID` slipped through the spread and
+  would have pinned `user_id` inside the server under E2E assertions that expect
+  `e2e-test-user-001`.
+
+### Removed
+
+- `NEXUS_METRICS_DISABLED` from the E2E spawn environment in
+  `tests/integration/mcp_protocol.test.ts`. It was a dead variable — nothing in
+  `src/` ever read it, so the comment claiming it prevented metrics port
+  conflicts was false. The real predicate is `shouldEnableMetrics()`: under
+  stdio, metrics start only when `NEXUS_METRICS_PORT` is present. Scrubbing that
+  var in the setup file is what actually keeps metrics off now.
+
 ## [0.1.4] — 2026-06-21
 
 ### Added
