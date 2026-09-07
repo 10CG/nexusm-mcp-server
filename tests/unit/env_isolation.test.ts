@@ -151,20 +151,35 @@ function collectTsFiles(dir: string): string[] {
  *   ACCESS  —— `process.env.X` / `process.env['X']` / `env.X` / `env['X']`
  *              (auth.ts / metrics.ts 把 `env: NodeJS.ProcessEnv` 作参数传,
  *              所以不能只认 `process.` 前缀)。抓得到 `NEXUS_METRICS_PORT`
- *              这类直接读取点。
+ *              这类**直接**读取点。
  *
- *   LITERAL —— 源码里任何被引号括起来的 `NEXUS_*` / `MCP_*` 字面量。抓得到
- *              `REQUIRED_ENV_VARS = ['NEXUS_API_URL', ...]` 这种**通过数组
- *              间接读取**的名字 —— 它在源码里长成 `env[key]`, ACCESS 正则
- *              看不见。这正是 CLAUDE.md 里"动态 getattr 取凭据既逃类型检查
- *              也逃字面 grep"那条教训的 TS 版本。
+ *   LITERAL —— 源码里任何 UPPER_SNAKE 形状的字符串字面量。这条是为了抓
+ *              `REQUIRED_ENV_VARS = ['NEXUS_API_URL', ...]` 这种**通过名字
+ *              数组间接读取**的变量 —— 它在源码里长成 `env[key]`, key 是运行
+ *              期变量, ACCESS 正则根本看不见。同 nexus 本仓 "动态 getattr
+ *              取凭据既逃静态检查也逃字面 grep" 那条教训的 TS 版本。
  *
- * LITERAL 会顺带抓到注释里提到的变量名 (如 auth.ts 注释里的 `NEXUS_USER_ID`)。
- * 这是有意的宽口径: 多抓不会漏判, 且它们本来就在受控前缀内。
+ *              注意口径必须是**全部** UPPER_SNAKE 而不能只收 `NEXUS_*` /
+ *              `MCP_*`: 只收受控前缀的话, 抓到的每一个按定义都已被覆盖,
+ *              这条正则就退化成纯装饰, 挡不住有人往那个数组里塞一个别的
+ *              前缀的名字。
  */
 const ACCESS_PATTERN =
   /(?:process\.)?env(?:\.([A-Z][A-Z0-9_]*)|\[\s*['"]([A-Z][A-Z0-9_]*)['"]\s*\])/g;
-const LITERAL_PATTERN = /['"]((?:NEXUS|MCP)_[A-Z0-9_]+)['"]/g;
+const LITERAL_PATTERN = /['"]([A-Z][A-Z0-9]*(?:_[A-Z0-9]+)+)['"]/g;
+
+/**
+ * LITERAL 口径放宽到全部 UPPER_SNAKE 之后, 会顺带抓到不是环境变量的常量。
+ * 这里逐个豁免, **要求写清它是什么** —— 往这个表里加一行应该是一次有意识的
+ * 判断 ("这真的不是环境变量吗"), 而不是为了让红变绿的顺手操作。
+ *
+ * 截至 2026-09-07, 全 `src/` 的 UPPER_SNAKE 字面量只有 5 个, 其中 4 个是
+ * `REQUIRED_ENV_VARS` / `NEXUS_DEFAULT_USER_ID` 那批真环境变量。
+ */
+const NON_ENV_LITERALS: ReadonlySet<string> = new Set([
+  // axios 的网络错误码, 出现在 src/errors.ts 里 `AxiosLikeError.code` 字段的行尾注释
+  'ERR_NETWORK',
+]);
 
 function scanEnvVarNames(files: string[]): string[] {
   const names = new Set<string>();
@@ -176,7 +191,7 @@ function scanEnvVarNames(files: string[]): string[] {
     }
     for (const match of source.matchAll(LITERAL_PATTERN)) {
       const name = match[1];
-      if (name !== undefined) names.add(name);
+      if (name !== undefined && !NON_ENV_LITERALS.has(name)) names.add(name);
     }
   }
   return [...names].sort();
