@@ -9,6 +9,92 @@ Versions follow [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Fixed
+
+- **Unit tests no longer inherit the host machine's `NEXUS_*` environment**
+  (issue #34). On a dev machine that has the nexus MCP plugin configured, the
+  shell exports `NEXUS_API_URL` / `NEXUS_API_TOKEN` / `NEXUS_TENANT_ID` /
+  `NEXUS_DEFAULT_USER_ID`; the vitest workers inherited them, so the code under
+  test read the developer's live config instead of the fixtures the test set up.
+  `npm run test:unit` was red on such machines (2 failed / 129 passed in
+  `tests/unit/tools/memory_search.test.ts` — `resolveUserId` returned the host
+  pin and overrode the `user_id` the test passed) while staying green on CI,
+  where the runner environment is clean.
+
+  Fix is structural rather than per-variable: `tests/setup/env-isolation.ts`
+  strips every `NEXUS_*` / `MCP_*` key **by prefix** before each test file loads,
+  then installs a small controlled baseline for the three vars `loadAuthConfig()`
+  requires. A new variable added to `src/` later is covered automatically.
+  Behaviour-changing optional vars (`NEXUS_DEFAULT_USER_ID`,
+  `NEXUS_METRICS_PORT`, `NEXUS_MCP_*`) are deliberately left unset so tests
+  exercise the default branches.
+
+  `tests/unit/env_isolation.test.ts` locks the isolation, including a scan of
+  `src/**` that fails if anyone adds an environment-variable read the policy
+  does not cover.
+
+  Test-only change — no runtime/`dist/` impact.
+
+- **`npm test` runs the two config-driven passes instead of a bare `vitest run`**
+  (review follow-up on the above). `setupFiles` hangs off `vitest.unit.config.ts`
+  / `vitest.integration.config.ts`, which only the `--config` entry points load.
+  Bare `vitest run` therefore got no isolation at all, while
+  `tests/unit/env_isolation.test.ts` asserts the isolation is active — so this
+  change made `npm test` fail even in a clean environment (on a clean checkout
+  of the pre-fix branch head, with the four `NEXUS_*` vars unset: 1 failed /
+  192 passed / 17 skipped), and RUNBOOK §5 named `npm test` as the local
+  repro for the CI `test:unit` step. `test` is now
+  `npm run test:unit && npm run test:integration` and `test:watch` carries
+  `--config vitest.unit.config.ts`, so `npm test` is by construction the same
+  surface CI runs.
+
+  Two further deviations disappear with it, both from bare vitest using its
+  default include glob instead of ours: a working-tree copy under
+  `.claude/worktrees/<id>/` was being collected as real tests (every test ran
+  twice — `.gitignore` does not affect vitest's default exclude), and
+  `tests/unit/schema_sync.test.ts` ran despite `vitest.unit.config.ts`
+  deliberately excluding it in favour of the deep version in
+  `tests/integration/`.
+
+- **The `src/**` coverage scan in `tests/unit/env_isolation.test.ts` no longer
+  misses destructured reads.** `const { SOME_VAR } = process.env` — an idiomatic
+  TS form — produces neither a property access nor a string literal, so it
+  slipped past both existing patterns: injecting one into `src/metrics.ts` left
+  the lock green while `src/` genuinely held an uncovered read. A third pattern
+  covers the destructuring form (plain, renamed, and defaulted bindings), and the
+  file walker's suffix whitelist widened from `.ts` only to
+  `.ts/.mts/.cts/.js/.mjs/.cjs` so a non-TS helper landing in `src/` cannot take
+  a whole file out of the scan. Re-running the same injection now fails the lock.
+
+- **Meta-test failures no longer echo host environment values.** The baseline and
+  cleanup assertions compared with `.toBe(value)` / `.toBeUndefined()`, which put
+  the *received* side — the host machine's real value — into the assertion diff,
+  and the set being asserted over includes `NEXUS_API_TOKEN`. The token stayed
+  out of the output only because `Object.entries(UNIT_ENV_BASELINE)` happened to
+  throw on `NEXUS_API_URL` first, which is incidental ordering, not a design.
+  Both now compare outside the assertion and pass a boolean in; the message still
+  names the offending key. Verified with canary values: the pre-fix file printed
+  them, the current one produces zero occurrences across the full run output.
+  Same lesson as the parent repo's `SecretStr` rule — one ordinary assertion
+  failure is enough to put a credential into a CI job log.
+
+- **Integration tests: same isolation, with `NEXUS_TEST_*` preserved** (those are
+  the suite's deliberate inputs, injected as Forgejo secrets in CI). This also
+  closes a latent leak in `tests/integration/mcp_protocol.test.ts`, which built
+  the spawned server's environment from `{ ...process.env, <3 explicit
+  overrides> }` — a host `NEXUS_DEFAULT_USER_ID` slipped through the spread and
+  would have pinned `user_id` inside the server under E2E assertions that expect
+  `e2e-test-user-001`.
+
+### Removed
+
+- `NEXUS_METRICS_DISABLED` from the E2E spawn environment in
+  `tests/integration/mcp_protocol.test.ts`. It was a dead variable — nothing in
+  `src/` ever read it, so the comment claiming it prevented metrics port
+  conflicts was false. The real predicate is `shouldEnableMetrics()`: under
+  stdio, metrics start only when `NEXUS_METRICS_PORT` is present. Scrubbing that
+  var in the setup file is what actually keeps metrics off now.
+
 ## [0.1.4] — 2026-06-21
 
 ### Added

@@ -127,14 +127,20 @@ const E2E_ENABLED =
  */
 function spawnServer(): Promise<ChildProcessWithoutNullStreams> {
   return new Promise((resolve_p, reject) => {
+    // `...process.env` 在这里是安全的: setupFiles (tests/setup/integration-env-setup.ts,
+    // issue #34) 已经把宿主的 NEXUS_* 清掉了 (NEXUS_TEST_* 除外), 所以开发机上的
+    // NEXUS_DEFAULT_USER_ID / NEXUS_METRICS_PORT 不会顺着 spread 漏进子进程。
+    //
+    // 之前这里写的是 `NEXUS_METRICS_DISABLED: '1'` 并注释"避免端口冲突" —— 那是
+    // 一个死变量, src/ 里没有任何地方读它。真正的开关是 shouldEnableMetrics():
+    // stdio 传输下只有 NEXUS_METRICS_PORT 存在时才起 metrics 监听。宿主设了
+    // NEXUS_METRICS_PORT 时, 那行"禁用"完全不生效, 端口冲突照样发生。
+    // 现在由 setup 的清理保证 metrics 保持关闭。
     const env: NodeJS.ProcessEnv = {
       ...process.env,
       NEXUS_API_URL: NEXUS_TEST_API_URL,
       NEXUS_API_TOKEN: NEXUS_TEST_API_TOKEN,
       NEXUS_TENANT_ID: NEXUS_TEST_TENANT_ID,
-      // Disable the Prometheus metrics HTTP server to avoid port conflicts
-      // across parallel matrix runs on the same host.
-      NEXUS_METRICS_DISABLED: '1',
     };
 
     const child = spawn('node', [SERVER_BINARY], {
@@ -186,12 +192,12 @@ describe.skipIf(!E2E_ENABLED)('E2E: MCP protocol round-trip (requires NEXUS_TEST
     const transport = new StdioClientTransport({
       command: 'node',
       args: [SERVER_BINARY],
+      // 同 spawnServer(): 宿主 NEXUS_* 已由 setupFiles 清理, spread 是安全的。
       env: {
         ...process.env,
         NEXUS_API_URL: NEXUS_TEST_API_URL,
         NEXUS_API_TOKEN: NEXUS_TEST_API_TOKEN,
         NEXUS_TENANT_ID: NEXUS_TEST_TENANT_ID,
-        NEXUS_METRICS_DISABLED: '1',
       },
     });
 
