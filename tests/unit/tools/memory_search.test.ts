@@ -30,8 +30,12 @@ const { searchSpy } = vi.hoisted(() => ({
   >(),
 }));
 
-vi.mock('@nexusm/sdk', () => {
+vi.mock('@nexusm/sdk', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@nexusm/sdk')>();
+  // Spread the real module so the SDK error classes stay real — the bridge in
+  // errors.ts matches them with `instanceof` (nexusm-mcp-server#32).
   return {
+    ...actual,
     NexusClient: vi.fn().mockImplementation(() => ({
       memories: {
         search: (body: unknown) => searchSpy(body),
@@ -147,5 +151,73 @@ describe('memory_search — enum validation', () => {
     expect(caught).toBeInstanceOf(NexusError);
     expect((caught as NexusError).mcpErrorCode).toBe(McpErrorCode.InvalidParams);
     expect(searchSpy).not.toHaveBeenCalled();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// SDK error mapping (nexusm-mcp-server#32) — real @nexusm/sdk error classes.
+// memory_search had no error-path test at all before this; the catch block
+// only recognised axios-shaped errors, which the SDK never throws.
+// ---------------------------------------------------------------------------
+
+const {
+  RateLimitError: SdkRateLimitError,
+  TimeoutError: SdkTimeoutError,
+  UpstreamInterceptError: SdkUpstreamInterceptError,
+} = await import('@nexusm/sdk');
+
+describe('memory_search — SDK error mapping (real SDK classes)', () => {
+  async function searchAndCatch(): Promise<NexusError> {
+    try {
+      await memorySearchTool.handler({ user_id: 'u1', query: 'q' });
+    } catch (err) {
+      expect(err).toBeInstanceOf(NexusError);
+      return err as NexusError;
+    }
+    throw new Error('handler resolved; expected it to throw');
+  }
+
+  it('UpstreamInterceptError (302 → login page) → Unauthorized + data.upstream_intercept', async () => {
+    searchSpy.mockRejectedValueOnce(
+      new SdkUpstreamInterceptError(
+        'Request to /memories/search was redirected (HTTP 302) to login.example.com ' +
+          'instead of being answered by Nexus. This is typically an expired or missing ' +
+          'edge credential (e.g. a Cloudflare Access service token) — the API itself was ' +
+          'never reached.',
+        302,
+        '<html>login</html>',
+      ),
+    );
+
+    const err = await searchAndCatch();
+    expect(err.mcpErrorCode).toBe(McpErrorCode.Unauthorized);
+    expect(err.retryable).toBe(false);
+    expect(err.data).toMatchObject({
+      upstream_intercept: true,
+      http_status: 302,
+      redirect_host: 'login.example.com',
+    });
+    expect(err.message).toMatch(/not a Nexus outage/);
+  });
+
+  it('RateLimitError(retryAfter=30) → RateLimited + data.retry_after_seconds=30', async () => {
+    searchSpy.mockRejectedValueOnce(new SdkRateLimitError('Rate limit exceeded', 30, {}));
+
+    const err = await searchAndCatch();
+    expect(err.mcpErrorCode).toBe(McpErrorCode.RateLimited);
+    expect(err.httpStatus).toBe(429);
+    expect(err.retryable).toBe(true);
+    expect(err.data).toEqual({ retry_after_seconds: 30 });
+  });
+
+  it('TimeoutError → RequestTimeout + data.timeout', async () => {
+    searchSpy.mockRejectedValueOnce(
+      new SdkTimeoutError('Request to /memories/search timed out after 30000ms'),
+    );
+
+    const err = await searchAndCatch();
+    expect(err.mcpErrorCode).toBe(McpErrorCode.RequestTimeout);
+    expect(err.retryable).toBe(true);
+    expect(err.data).toEqual({ timeout: true });
   });
 });

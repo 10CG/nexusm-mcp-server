@@ -38,8 +38,12 @@ const { submitSpy } = vi.hoisted(() => ({
   >(),
 }));
 
-vi.mock('@nexusm/sdk', () => {
+vi.mock('@nexusm/sdk', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@nexusm/sdk')>();
+  // Spread the real module so the SDK error classes stay real — the bridge in
+  // errors.ts matches them with `instanceof` (nexusm-mcp-server#32).
   return {
+    ...actual,
     NexusClient: vi.fn().mockImplementation(() => ({
       feedback: {
         submit: (retrieveId: string, body: Record<string, unknown>) => submitSpy(retrieveId, body),
@@ -59,6 +63,12 @@ process.env.NEXUS_TENANT_ID = 'test-tenant';
 // module's top-level imports execute.
 const { memoryFeedbackTool, __resetClientForTesting, __setAuditLoggerForTesting } =
   await import('../../../src/tools/memory_feedback.js');
+// Real SDK error classes (the mock above spreads the original module).
+const {
+  AuthenticationError: SdkAuthenticationError,
+  NetworkError: SdkNetworkError,
+  UpstreamInterceptError: SdkUpstreamInterceptError,
+} = await import('@nexusm/sdk');
 
 const VALID_RETRIEVE_ID = '11111111-1111-1111-1111-111111111111';
 const VALID_MEMORY_ID = '22222222-2222-2222-2222-222222222222';
@@ -224,20 +234,13 @@ describe('memory_feedback — user_id privacy (R2.1 D-1 backend contract)', () =
 // The qa-engineer audit (pre_merge R1 I-2) flagged the absence of these cases.
 // ---------------------------------------------------------------------------
 
-describe('memory_feedback — SDK error mapping (post-2B catch wrap)', () => {
-  it('maps SDK 401 to NexusError(Unauthorized) via post-2B catch wrap', async () => {
-    const axiosLike401 = {
-      isAxiosError: true,
-      response: {
-        status: 401,
-        data: { detail: 'invalid token' },
-        headers: {} as Record<string, string>,
-      },
-      message: 'Request failed 401',
-    };
-    submitSpy.mockRejectedValueOnce(axiosLike401);
-
-    let caught: unknown;
+describe('memory_feedback — SDK error mapping (post-2B catch wrap, real SDK classes)', () => {
+  // The rejections below are the REAL `@nexusm/sdk` error classes — what the
+  // SDK's response interceptor actually throws. The previous version of these
+  // tests used `{ isAxiosError: true, ... }` fakes; the SDK has never thrown
+  // that shape, which is why the mapping was green here and dead in
+  // production (nexusm-mcp-server#32).
+  async function submitAndCatch(): Promise<NexusError> {
     try {
       await memoryFeedbackTool.handler({
         user_id: VALID_USER_ID,
@@ -245,44 +248,58 @@ describe('memory_feedback — SDK error mapping (post-2B catch wrap)', () => {
         rating: 5,
       });
     } catch (err) {
-      caught = err;
+      expect(err).toBeInstanceOf(NexusError);
+      return err as NexusError;
     }
+    throw new Error('handler resolved; expected it to throw');
+  }
 
-    expect(caught).toBeInstanceOf(NexusError);
-    const nexusErr = caught as NexusError;
+  it('maps SDK AuthenticationError (401) to NexusError(Unauthorized)', async () => {
+    submitSpy.mockRejectedValueOnce(
+      new SdkAuthenticationError('invalid token', { detail: 'invalid token' }),
+    );
+
+    const nexusErr = await submitAndCatch();
     expect(nexusErr.mcpErrorCode).toBe(McpErrorCode.Unauthorized);
     expect(nexusErr.httpStatus).toBe(401);
     expect(nexusErr.retryable).toBe(false);
+    expect(nexusErr.data?.['upstream_intercept']).toBeUndefined();
   });
 
-  it('maps SDK network error (ECONNREFUSED, no response) to NexusError(InternalError, network=true)', async () => {
-    // axios-like error with isAxiosError:true but no .response (ECONNREFUSED):
-    // the catch block's non-axios branch calls mapHttpStatusToMcpError(null, null)
-    // which always returns InternalError with data.network=true.
-    const axiosLikeNetwork = {
-      isAxiosError: true,
-      message: 'connect ECONNREFUSED 127.0.0.1:8001',
-      code: 'ECONNREFUSED',
-    };
-    submitSpy.mockRejectedValueOnce(axiosLikeNetwork);
+  it('maps SDK NetworkError (ECONNREFUSED, no response) to NexusError(InternalError, network=true)', async () => {
+    submitSpy.mockRejectedValueOnce(new SdkNetworkError('connect ECONNREFUSED 127.0.0.1:8001'));
 
-    let caught: unknown;
-    try {
-      await memoryFeedbackTool.handler({
-        user_id: VALID_USER_ID,
-        retrieve_id: VALID_RETRIEVE_ID,
-        rating: 5,
-      });
-    } catch (err) {
-      caught = err;
-    }
-
-    expect(caught).toBeInstanceOf(NexusError);
-    const nexusErr = caught as NexusError;
+    const nexusErr = await submitAndCatch();
     // Network error: null httpStatus → InternalError (-32603)
     expect(nexusErr.mcpErrorCode).toBe(McpErrorCode.InternalError);
     expect(nexusErr.httpStatus).toBeNull();
     expect(nexusErr.data?.['network']).toBe(true);
     expect(nexusErr.retryable).toBe(true);
+  });
+
+  it('maps SDK UpstreamInterceptError (2xx HTML from a portal) to Unauthorized + data.upstream_intercept', async () => {
+    // Message shape mirrors `@nexusm/sdk` http/client.ts `assertNotIntercepted`.
+    submitSpy.mockRejectedValueOnce(
+      new SdkUpstreamInterceptError(
+        'Request to /feedback/x returned HTTP 200 with content-type "text/html; charset=utf-8" ' +
+          'where JSON was expected. Something between this client and Nexus answered the ' +
+          'request (auth edge, proxy, or captive portal); treating it as data would look ' +
+          'like an empty result.',
+        200,
+        '<html>portal</html>',
+      ),
+    );
+
+    const nexusErr = await submitAndCatch();
+    expect(nexusErr.mcpErrorCode).toBe(McpErrorCode.Unauthorized);
+    expect(nexusErr.retryable).toBe(false);
+    expect(nexusErr.data).toMatchObject({
+      upstream_intercept: true,
+      http_status: 200,
+      content_type: 'text/html; charset=utf-8',
+    });
+    expect(nexusErr.data?.['redirect_host']).toBeUndefined();
+    // The sentinel token set at the top of this file must never surface.
+    expect(JSON.stringify(nexusErr.toJSON())).not.toContain('SECRET-DO-NOT-LEAK');
   });
 });

@@ -27,7 +27,7 @@ import { NexusClient } from '@nexusm/sdk';
 import type { ContextRequest, ContextRetrieveResponse } from '@nexusm/sdk';
 
 import { loadAuthConfig, resolveUserId, type AuthConfig } from '../auth.js';
-import { NexusError, McpErrorCode, isAxiosLikeError, mapHttpStatusToMcpError } from '../errors.js';
+import { NexusError, McpErrorCode, mapSdkErrorToMcpError } from '../errors.js';
 import type { ToolDefinition } from './types.js';
 
 const NAME = 'nexus.context_retrieve';
@@ -181,24 +181,16 @@ async function handler(args: Record<string, unknown>): Promise<CallToolResult> {
   };
   if (asOf !== undefined) sdkRequest.as_of = asOf;
 
-  // ---- Call SDK; translate errors to NexusError using TASK-013 mapping ---
+  // ---- Call SDK; translate errors to NexusError via the errors.ts bridge ---
   let resp: ContextRetrieveResponse;
   try {
     resp = await client.context.retrieve(sdkRequest);
   } catch (err) {
     // Re-throw NexusError unchanged (already translated, e.g. from validateAsOf).
     if (err instanceof NexusError) throw err;
-    // Axios-like error from the SDK: use the canonical HTTP→MCP mapping.
-    if (isAxiosLikeError(err)) {
-      throw mapHttpStatusToMcpError(
-        err.response?.status ?? null,
-        err.response?.data,
-        err.response?.headers,
-      );
-    }
-    // Unknown / plain Error: surface as InternalError.
-    const msg = err instanceof Error ? err.message : String(err);
-    throw new NexusError(`nexus.context_retrieve failed: ${msg}`, McpErrorCode.InternalError);
+    // Everything the SDK throws — its typed error classes, a raw axios error,
+    // a plain Error — goes through the single bridge (nexusm-mcp-server#32).
+    throw mapSdkErrorToMcpError(err, NAME);
   }
 
   // ---- Map SDK response → MCP outputSchema shape ----------------------

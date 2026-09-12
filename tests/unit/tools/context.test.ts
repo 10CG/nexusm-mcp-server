@@ -30,14 +30,20 @@ import type { ContextRetrieveResponse } from '@nexusm/sdk';
 // `import('@nexusm/sdk')` and call its `__retrieve` accessor.
 const retrieveSpy = vi.fn();
 
-vi.mock('@nexusm/sdk', () => {
+vi.mock('@nexusm/sdk', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@nexusm/sdk')>();
   class FakeNexusClient {
     public readonly context = { retrieve: retrieveSpy };
     constructor(_cfg: unknown) {
       // no-op
     }
   }
+  // Spread the real module so the SDK error classes stay real: the bridge in
+  // errors.ts matches them with `instanceof` (nexusm-mcp-server#32), and a
+  // factory that drops them is exactly how the original bug stayed hidden —
+  // the tests fed axios-shaped fakes the SDK never throws.
   return {
+    ...actual,
     NexusClient: FakeNexusClient,
     // ContextRequest / ContextRetrieveResponse are type-only — no runtime export needed.
   };
@@ -61,6 +67,12 @@ vi.mock('../../../src/auth.js', async (importOriginal) => {
 const { contextRetrieveTool, validateAsOf, __setClientForTesting, __setAuthForTesting } =
   await import('../../../src/tools/context.js');
 const { NexusError, McpErrorCode } = await import('../../../src/errors.js');
+// Real SDK error classes (the mock above spreads the original module).
+const {
+  AuthenticationError: SdkAuthenticationError,
+  NetworkError: SdkNetworkError,
+  UpstreamInterceptError: SdkUpstreamInterceptError,
+} = await import('@nexusm/sdk');
 
 // -----------------------------------------------------------------------
 // Helpers
@@ -232,26 +244,80 @@ describe('nexus.context_retrieve — as_of validation', () => {
 });
 
 describe('nexus.context_retrieve — SDK failures propagate', () => {
-  it('NetworkError from SDK surfaces as NexusError InternalError (case 6)', async () => {
-    class FakeNetworkError extends Error {
-      constructor(msg: string) {
-        super(msg);
-        this.name = 'NetworkError';
-      }
-    }
-    retrieveSpy.mockRejectedValue(new FakeNetworkError('ECONNREFUSED'));
-
-    let caught: unknown;
+  // These use the REAL `@nexusm/sdk` error classes. The SDK's response
+  // interceptor wraps every axios failure into them (none carries
+  // `isAxiosError`), so a fake shaped any other way would test a path that
+  // production never takes (nexusm-mcp-server#32).
+  async function callAndCatch(): Promise<InstanceType<typeof NexusError>> {
     try {
       await contextRetrieveTool.handler({ user_id: 'u1', query: 'q' });
     } catch (e) {
-      caught = e;
+      expect(e).toBeInstanceOf(NexusError);
+      return e as InstanceType<typeof NexusError>;
     }
-    expect(caught).toBeInstanceOf(NexusError);
-    expect((caught as InstanceType<typeof NexusError>).mcpErrorCode).toBe(
-      McpErrorCode.InternalError,
+    throw new Error('handler resolved; expected it to throw');
+  }
+
+  it('NetworkError from SDK surfaces as NexusError InternalError + data.network (case 6)', async () => {
+    retrieveSpy.mockRejectedValue(new SdkNetworkError('connect ECONNREFUSED 127.0.0.1:8001'));
+
+    const caught = await callAndCatch();
+    expect(caught.mcpErrorCode).toBe(McpErrorCode.InternalError);
+    expect(caught.httpStatus).toBeNull();
+    expect(caught.retryable).toBe(true);
+    expect(caught.data?.['network']).toBe(true);
+    // The SDK's own detail is what tells the operator the URL is wrong.
+    expect(caught.message).toMatch(/ECONNREFUSED/);
+  });
+
+  it('UpstreamInterceptError (302 → login page) → Unauthorized + data.upstream_intercept, not "Nexus is down"', async () => {
+    // Message shape mirrors `@nexusm/sdk` http/client.ts `upstreamRedirectError`.
+    retrieveSpy.mockRejectedValue(
+      new SdkUpstreamInterceptError(
+        'Request to /context/retrieve was redirected (HTTP 302) to login.example.com ' +
+          'instead of being answered by Nexus. This is typically an expired or missing ' +
+          'edge credential (e.g. a Cloudflare Access service token) — the API itself was ' +
+          'never reached.',
+        302,
+        '<html>login</html>',
+      ),
     );
-    expect((caught as Error).message).toMatch(/ECONNREFUSED/);
+
+    const caught = await callAndCatch();
+    expect(caught.mcpErrorCode).toBe(McpErrorCode.Unauthorized);
+    expect(caught.retryable).toBe(false);
+    expect(caught.data).toMatchObject({
+      upstream_intercept: true,
+      http_status: 302,
+      redirect_host: 'login.example.com',
+    });
+    // The wording must point at the local credential / URL, not at Nexus.
+    expect(caught.message).toMatch(/intercepted before it reached Nexus/);
+    expect(caught.message).toMatch(/not a Nexus outage/);
+    // Nothing from the edge's HTML body or any header leaks into the message.
+    expect(caught.message).not.toContain('<html>');
+  });
+
+  it('AuthenticationError (a real 401 from Nexus) → Unauthorized WITHOUT upstream_intercept — the two stay distinguishable', async () => {
+    retrieveSpy.mockRejectedValue(
+      new SdkAuthenticationError('Invalid API key', { detail: 'Invalid API key' }),
+    );
+
+    const caught = await callAndCatch();
+    expect(caught.mcpErrorCode).toBe(McpErrorCode.Unauthorized);
+    expect(caught.httpStatus).toBe(401);
+    expect(caught.retryable).toBe(false);
+    expect(caught.data?.['upstream_intercept']).toBeUndefined();
+  });
+
+  it('plain Error from SDK → InternalError, retryable=false, message kept, NOT flagged as network', async () => {
+    retrieveSpy.mockRejectedValue(new Error('something unexpected inside the SDK'));
+
+    const caught = await callAndCatch();
+    expect(caught.mcpErrorCode).toBe(McpErrorCode.InternalError);
+    expect(caught.retryable).toBe(false);
+    expect(caught.data?.['network']).toBeUndefined();
+    expect(caught.message).toMatch(/nexus\.context_retrieve failed: something unexpected/);
   });
 });
 
