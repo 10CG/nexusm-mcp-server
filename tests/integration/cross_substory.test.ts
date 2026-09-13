@@ -1,15 +1,20 @@
 /**
  * Cross-sub-story integration test: auth (US-037b) + tool handlers (US-037a)
- * + errors taxonomy (TASK-013).
+ * + errors taxonomy (TASK-013) + the @nexusm/sdk error bridge (#32).
  *
  * TASK-018 — Wave 2B final integration gate.
  * Updated post-Wave-2B gap fix (commit 45cc294): memory_search.ts and
- * memory_create.ts now have internal try/catch blocks that call
- * mapHttpStatusToMcpError and re-throw as NexusError. Cases 2 + 3 are
- * updated to reflect this: the handler itself throws NexusError; no raw
- * axios-like object propagates to the caller any longer.
+ * memory_create.ts have internal try/catch blocks and re-throw NexusError.
+ * Updated again for nexusm-mcp-server#32 (2026-09-12): the SDK rejections
+ * below are now the REAL `@nexusm/sdk` error classes. The previous version
+ * used `{ isAxiosError: true, ... }` fakes — a shape the SDK has never thrown
+ * (its response interceptor has wrapped every axios failure into `ApiError` /
+ * `TimeoutError` / `NetworkError` since v1.0.0). Those fakes kept this gate
+ * green while the whole §M-3 mapping was unreachable in production: every
+ * real 401 / 429 / 5xx fell through to the "network" branch. This file is
+ * the integration-level lock against that class of mock drift.
  *
- * This suite is unit-grade in that it uses vi.mock to replace @nexusm/sdk
+ * This suite is unit-grade in that it uses vi.mock to replace `NexusClient`
  * (zero live network, zero live Nexus API), but lives in tests/integration/
  * because it exercises the *interaction boundary* between three modules:
  *
@@ -17,48 +22,45 @@
  *     ↕
  *   tools/context.ts | tools/memory_search.ts | tools/memory_create.ts
  *     ↕
- *   errors.ts (mapHttpStatusToMcpError + isAxiosLikeError + NexusError)
+ *   errors.ts (mapSdkErrorToMcpError → mapHttpStatusToMcpError → NexusError)
  *
- * Three cases:
+ * Four cases:
  *
- *   Case 1 — Auth failure (401 from Nexus REST)
+ *   Case 1 — Auth failure (401 / 403 from Nexus REST)
  *     Handler : nexus.context_retrieve
- *     Trigger : SDK throws axios-like { response: { status: 401, ... } }
- *     Expected: NexusError, mcpErrorCode=Unauthorized (-32011), httpStatus=401
+ *     Trigger : SDK throws `AuthenticationError` (401) / `ApiError` (403)
+ *     Expected: NexusError, mcpErrorCode=Unauthorized (-32011), httpStatus
+ *               401 / 403, retryable=false, NO data.upstream_intercept.
  *
  *   Case 2 — Network failure (ECONNREFUSED — Nexus API unreachable)
  *     Handler : nexus.memory_search
- *     Trigger : SDK throws axios-like { isAxiosError:true, code:'ECONNREFUSED' }
- *               with no response object.
- *     Expected: NexusError thrown directly by handler's catch block
- *               (mapHttpStatusToMcpError(null, null) → InternalError,
- *               httpStatus=null, data.network=true). The error is already a
- *               NexusError when it reaches the caller; isAxiosLikeError
- *               returns false on it.
+ *     Trigger : SDK throws `NetworkError`.
+ *     Expected: NexusError(InternalError, httpStatus=null, data.network=true,
+ *               retryable=true). A *plain* Error is deliberately different
+ *               now: InternalError, retryable=false, no data.network —
+ *               "retry, Nexus is down" is exactly the misdiagnosis #32 is
+ *               about, so an unknown failure is no longer labelled network.
  *
- *   Case 3 — Rate limit with Retry-After header
+ *   Case 3 — Rate limit with Retry-After
  *     Handler : nexus.memory_create
- *     Trigger : SDK throws axios-like { response: { status: 429,
- *               headers: { 'retry-after': '60' } } }
- *     Expected: NexusError thrown directly by handler's catch block
- *               (mapHttpStatusToMcpError(429, body, headers) → RateLimited,
- *               httpStatus=429, data.retry_after_seconds=60).
+ *     Trigger : SDK throws `RateLimitError(message, retryAfter=60)`.
+ *     Expected: NexusError(RateLimited, httpStatus=429,
+ *               data.retry_after_seconds=60).
  *
- * Architecture note on error propagation (post-45cc294):
- *   All three handlers (context.ts, memory_search.ts, memory_create.ts) now
- *   contain their own try/catch → mapHttpStatusToMcpError → throw NexusError
- *   chain. The distinction between Cases 1, 2, and 3 is therefore which tool
- *   handler is exercised and which error shape the SDK throws, not whether
- *   the error propagates raw.
+ *   Case 4 — Upstream interception (@nexusm/sdk 5.2.0 `UpstreamInterceptError`)
+ *     Handlers: nexus.context_retrieve (302 → login page) and
+ *               nexus.memory_search (200 with an HTML body).
+ *     Expected: NexusError(Unauthorized, retryable=false,
+ *               data.upstream_intercept=true + http_status + redirect_host /
+ *               content_type). The message blames the local credential /
+ *               NEXUS_API_URL, never "Nexus is down".
  *
- *   For Case 2's plain-Error sub-case: a non-axios plain Error also hits the
- *   catch block's else branch (mapHttpStatusToMcpError(null, null)), producing
- *   the same NexusError(InternalError, network=true) shape. The two sub-cases
- *   are now indistinguishable at the NexusError level — both produce
- *   InternalError + data.network=true — because the handler normalizes them.
+ * Every case also checks `NexusError.code` — the property the MCP SDK reads
+ * when it serialises a thrown handler error into the JSON-RPC `error.code`.
  *
  * Mock discipline:
- *   - vi.mock('@nexusm/sdk') replaces NexusClient entirely; spies are
+ *   - vi.mock('@nexusm/sdk') replaces `NexusClient` only and spreads the
+ *     original module, so the error classes are the real ones; spies are
  *     declared via vi.hoisted so they are available inside the hoisted
  *     mock factory.
  *   - context.ts uses __setClientForTesting to inject a ContextClient mock.
@@ -67,7 +69,8 @@
  *     constructor (set per-test via mockImplementation) to inject errors.
  *   - process.env is set to sentinel values for auth-token redaction
  *     discipline (mirrors auth.test.ts sentinel pattern).
- *   - No live network, no live Nexus API.
+ *   - No live network, no live Nexus API. The loopback variant that drives
+ *     the REAL SDK interceptor lives in `sdk_error_bridge_loopback.test.ts`.
  */
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -100,7 +103,8 @@ const { contextRetrieveSpy, memoriesSearchSpy, memoriesCreateSpy, sdkClientCtorS
   }),
 );
 
-vi.mock('@nexusm/sdk', () => {
+vi.mock('@nexusm/sdk', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@nexusm/sdk')>();
   class NexusClient {
     public readonly context = { retrieve: contextRetrieveSpy };
     public readonly memories = {
@@ -111,14 +115,25 @@ vi.mock('@nexusm/sdk', () => {
       sdkClientCtorSpy(cfg);
     }
   }
-  return { NexusClient };
+  // Spread the real module: only the client is faked, the error classes the
+  // bridge matches with `instanceof` stay real (nexusm-mcp-server#32).
+  return { ...actual, NexusClient };
 });
 
 // ---------------------------------------------------------------------------
 // Late imports — AFTER vi.mock and env setup so the mocks bind correctly.
 // ---------------------------------------------------------------------------
 
-// errors.ts (TASK-013)
+// Real SDK error classes (the mock spreads the original module).
+import {
+  ApiError as SdkApiError,
+  AuthenticationError as SdkAuthenticationError,
+  NetworkError as SdkNetworkError,
+  RateLimitError as SdkRateLimitError,
+  UpstreamInterceptError as SdkUpstreamInterceptError,
+} from '@nexusm/sdk';
+
+// errors.ts (TASK-013 + #32 bridge)
 import {
   NexusError,
   McpErrorCode,
@@ -152,18 +167,37 @@ async function catchError(fn: () => Promise<unknown>): Promise<unknown> {
   throw new Error('Expected the function to throw, but it resolved successfully');
 }
 
+/** Mirrors `@nexusm/sdk` http/client.ts `upstreamRedirectError` wording. */
+function sdkRedirectMessage(url: string, status: number, host: string): string {
+  return (
+    `Request to ${url} was redirected (HTTP ${status}) to ${host} instead of being ` +
+    'answered by Nexus. This is typically an expired or missing edge credential ' +
+    '(e.g. a Cloudflare Access service token) — the API itself was never reached.'
+  );
+}
+
+/** Mirrors `@nexusm/sdk` http/client.ts `assertNotIntercepted` wording. */
+function sdkNonJsonMessage(url: string, status: number, contentType: string): string {
+  return (
+    `Request to ${url} returned HTTP ${status} with content-type "${contentType}" where ` +
+    'JSON was expected. Something between this client and Nexus answered the request ' +
+    '(auth edge, proxy, or captive portal); treating it as data would look like an ' +
+    'empty result.'
+  );
+}
+
 // ---------------------------------------------------------------------------
-// Case 1 — Auth failure (401 Unauthorized) via nexus.context_retrieve
+// Case 1 — Auth failure (401 / 403) via nexus.context_retrieve
 // ---------------------------------------------------------------------------
 
-describe('Cross-substory Case 1: auth failure (401) through context_retrieve + errors.ts', () => {
+describe('Cross-substory Case 1: auth failure (401 / 403) through context_retrieve + errors.ts', () => {
   /**
    * Full integrated chain:
    *   NEXUS_API_TOKEN (sentinel, AuthConfig from auth.ts)
    *   → context.ts handler calls getClient().context.retrieve()
-   *   → SDK throws axios-like { response: { status: 401, data: {...} } }
-   *   → context.ts catch block: isAxiosLikeError → true
-   *   → mapHttpStatusToMcpError(401, body, headers)
+   *   → SDK throws AuthenticationError (its interceptor's 401 class)
+   *   → context.ts catch block → mapSdkErrorToMcpError
+   *   → instanceof ApiError → mapHttpStatusToMcpError(401, body)
    *   → throws NexusError(Unauthorized, httpStatus=401, retryable=false)
    */
 
@@ -179,19 +213,15 @@ describe('Cross-substory Case 1: auth failure (401) through context_retrieve + e
     __setClientForTesting(null);
   });
 
-  it('401 from SDK → NexusError Unauthorized (-32011), httpStatus=401, retryable=false', async () => {
-    const axiosLike401 = {
-      isAxiosError: true as const,
-      message: 'Request failed with status code 401',
-      response: {
-        status: 401,
-        data: { detail: 'Authentication credentials were not provided or are invalid.' },
-        headers: {} as Record<string, string>,
-      },
-      code: undefined as string | undefined,
-    };
+  it('AuthenticationError (401) from SDK → NexusError Unauthorized (-32011), httpStatus=401, retryable=false', async () => {
+    const sdk401 = new SdkAuthenticationError(
+      'Authentication credentials were not provided or are invalid.',
+      { detail: 'Authentication credentials were not provided or are invalid.' },
+    );
+    // The fact the old catch blocks got wrong: no SDK error is axios-shaped.
+    expect(isAxiosLikeError(sdk401)).toBe(false);
 
-    contextRetrieveSpy.mockRejectedValue(axiosLike401);
+    contextRetrieveSpy.mockRejectedValue(sdk401);
 
     const caught = await catchError(() =>
       contextRetrieveTool.handler({
@@ -200,7 +230,7 @@ describe('Cross-substory Case 1: auth failure (401) through context_retrieve + e
       }),
     );
 
-    // The full chain produces a NexusError — not the raw axios object.
+    // The full chain produces a NexusError — not the raw SDK error.
     expect(caught).toBeInstanceOf(NexusError);
 
     const nexusErr = caught as NexusError;
@@ -208,6 +238,8 @@ describe('Cross-substory Case 1: auth failure (401) through context_retrieve + e
     // errors.ts §M-3: 401 → Unauthorized (-32011)
     expect(nexusErr.mcpErrorCode).toBe(McpErrorCode.Unauthorized);
     expect(nexusErr.mcpErrorCode).toBe(-32011);
+    // ...and that is what the JSON-RPC layer will read.
+    expect(nexusErr.code).toBe(-32011);
 
     // HTTP status preserved for client diagnostics.
     expect(nexusErr.httpStatus).toBe(401);
@@ -215,26 +247,26 @@ describe('Cross-substory Case 1: auth failure (401) through context_retrieve + e
     // Auth failures are not retryable — refreshing the token is required.
     expect(nexusErr.retryable).toBe(false);
 
+    // A real 401 is NOT an upstream interception (see Case 4).
+    expect(nexusErr.data?.['upstream_intercept']).toBeUndefined();
+
+    // The SDK error rides along as cause (never serialised).
+    expect(nexusErr.cause).toBe(sdk401);
+
     // Security: toJSON() must not leak the sentinel auth token.
     const json = JSON.stringify(nexusErr.toJSON());
     expect(json).not.toContain('CROSS-SUBSTORY-12345');
     expect(json).not.toContain('Bearer');
   });
 
-  it('403 from SDK → NexusError Unauthorized (-32011), httpStatus=403', async () => {
+  it('ApiError with statusCode 403 from SDK → NexusError Unauthorized (-32011), httpStatus=403', async () => {
     // 403 (Forbidden) uses the same Unauthorized code per §M-3 — tenant-level
     // scope denial is not distinguishable from invalid token at the MCP layer.
-    const axiosLike403 = {
-      isAxiosError: true as const,
-      message: 'Request failed with status code 403',
-      response: {
-        status: 403,
-        data: { detail: 'Tenant access denied.' },
-        headers: {} as Record<string, string>,
-      },
-    };
-
-    contextRetrieveSpy.mockRejectedValue(axiosLike403);
+    // The SDK has no dedicated 403 class: `ApiError.fromResponse` returns the
+    // base ApiError with statusCode=403.
+    contextRetrieveSpy.mockRejectedValue(
+      new SdkApiError('Tenant access denied.', 403, { detail: 'Tenant access denied.' }),
+    );
 
     const caught = await catchError(() =>
       contextRetrieveTool.handler({
@@ -277,24 +309,14 @@ describe('Cross-substory Case 1: auth failure (401) through context_retrieve + e
 
 describe('Cross-substory Case 2: network failure (ECONNREFUSED) through memory_search + errors.ts', () => {
   /**
-   * Chain exercised (post-45cc294):
+   * Chain exercised:
    *   memory_search.ts handler calls client.memories.search()
-   *   → SDK throws axios-like { isAxiosError:true, code:'ECONNREFUSED',
-   *                              request:{}, no response }
-   *   → memory_search.ts catch block: isAxiosLikeError → true,
-   *     status = err.response?.status ?? null → null
-   *   → mapHttpStatusToMcpError(null, null) → NexusError(InternalError,
-   *     httpStatus=null, data.network=true, retryable=true)
-   *   → handler re-throws NexusError directly (not the raw axios object)
-   *
-   * The caller receives a NexusError; isAxiosLikeError(caughtRaw) is false
-   * (NexusError has no isAxiosError property).
-   *
-   * For the plain-Error sub-case: a plain Error also enters the catch block's
-   * else branch (isAxiosLikeError → false), which calls
-   * mapHttpStatusToMcpError(null, null) and throws NexusError(InternalError,
-   * network=true) — identical shape to the axios-like network-error case.
-   * The handler normalizes both into the same NexusError form.
+   *   → SDK throws NetworkError('connect ECONNREFUSED 127.0.0.1:8001')
+   *     (its interceptor's "no response at all" class)
+   *   → memory_search.ts catch block → mapSdkErrorToMcpError
+   *   → instanceof NetworkError → NexusError(InternalError, httpStatus=null,
+   *     data.network=true, retryable=true), SDK detail kept in the message
+   *   → handler re-throws NexusError directly (not the raw SDK error)
    */
 
   beforeEach(() => {
@@ -306,18 +328,12 @@ describe('Cross-substory Case 2: network failure (ECONNREFUSED) through memory_s
     resetSearchClient();
   });
 
-  it('ECONNREFUSED → handler catch maps to NexusError(InternalError, network=true)', async () => {
-    const axiosLikeEconnrefused = {
-      isAxiosError: true as const,
-      message: 'connect ECONNREFUSED 127.0.0.1:8001',
-      code: 'ECONNREFUSED',
-      request: { method: 'POST', path: '/v1/memories/search' },
-      // No `response` property: server was unreachable before sending a response.
-    };
+  it('NetworkError (ECONNREFUSED) → handler catch maps to NexusError(InternalError, network=true)', async () => {
+    const sdkNetworkError = new SdkNetworkError('connect ECONNREFUSED 127.0.0.1:8001');
+    expect(isAxiosLikeError(sdkNetworkError)).toBe(false);
 
-    memoriesSearchSpy.mockRejectedValue(axiosLikeEconnrefused);
+    memoriesSearchSpy.mockRejectedValue(sdkNetworkError);
 
-    // Handler has a catch block (post-45cc294): throws NexusError directly.
     const caughtRaw = await catchError(() =>
       memorySearchTool.handler({
         user_id: 'user-network-test-001',
@@ -325,17 +341,15 @@ describe('Cross-substory Case 2: network failure (ECONNREFUSED) through memory_s
       }),
     );
 
-    // The handler now throws NexusError — not the raw axios-like object.
+    // The handler throws NexusError — not the raw SDK error.
     expect(caughtRaw).toBeInstanceOf(NexusError);
-
-    // isAxiosLikeError is false: NexusError has no isAxiosError property.
-    expect(isAxiosLikeError(caughtRaw)).toBe(false);
 
     const nexusErr = caughtRaw as NexusError;
 
     // errors.ts §M-3: null status (no HTTP response) → InternalError (-32603).
     expect(nexusErr.mcpErrorCode).toBe(McpErrorCode.InternalError);
     expect(nexusErr.mcpErrorCode).toBe(-32603);
+    expect(nexusErr.code).toBe(-32603);
     expect(nexusErr.httpStatus).toBeNull();
 
     // Network failures are retryable (client may retry after backoff).
@@ -347,14 +361,17 @@ describe('Cross-substory Case 2: network failure (ECONNREFUSED) through memory_s
 
     // data.timeout must NOT be set — this is a connection error, not a timeout.
     expect(nexusErr.data!['timeout']).toBeUndefined();
+
+    // The SDK's detail is what tells the operator the URL / port is wrong.
+    expect(nexusErr.message).toMatch(/ECONNREFUSED 127\.0\.0\.1:8001/);
   });
 
-  it('plain Error → handler catch also produces NexusError(InternalError, network=true)', async () => {
-    // A plain Error (e.g. SDK internal throw not wrapped by axios) enters the
-    // catch block's else branch (isAxiosLikeError → false) and also calls
-    // mapHttpStatusToMcpError(null, null), producing the same NexusError shape.
-    // Both paths are normalized — the caller cannot distinguish them at the
-    // NexusError level (by design: both signal network-layer failure).
+  it('plain Error → InternalError, retryable=false, NOT labelled as a network failure', async () => {
+    // A plain Error (an SDK-internal throw the interceptor never saw) used to
+    // be normalised into the same InternalError+network=true shape as a real
+    // NetworkError. That told the client "retry, Nexus is unreachable" for
+    // something that was neither — the misdiagnosis #32 is about. It now
+    // surfaces as a non-retryable InternalError with the original message.
     memoriesSearchSpy.mockRejectedValue(new Error('connection refused (plain Error)'));
 
     const caughtRaw = await catchError(() =>
@@ -364,33 +381,31 @@ describe('Cross-substory Case 2: network failure (ECONNREFUSED) through memory_s
       }),
     );
 
-    // Both axios-like network error and plain Error produce NexusError(InternalError).
     expect(caughtRaw).toBeInstanceOf(NexusError);
     const nexusErr = caughtRaw as NexusError;
     expect(nexusErr.mcpErrorCode).toBe(McpErrorCode.InternalError);
     expect(nexusErr.httpStatus).toBeNull();
-    expect(nexusErr.data!['network']).toBe(true);
-    expect(nexusErr.retryable).toBe(true);
+    expect(nexusErr.retryable).toBe(false);
+    expect(nexusErr.data?.['network']).toBeUndefined();
+    expect(nexusErr.message).toBe('nexus.memory_search failed: connection refused (plain Error)');
   });
 });
 
 // ---------------------------------------------------------------------------
-// Case 3 — Rate limit with Retry-After header via nexus.memory_create + errors.ts
+// Case 3 — Rate limit with Retry-After via nexus.memory_create + errors.ts
 // ---------------------------------------------------------------------------
 
 describe('Cross-substory Case 3: rate limit (429 + Retry-After) through memory_create + errors.ts', () => {
   /**
-   * Chain exercised (post-45cc294):
+   * Chain exercised:
    *   memory_create.ts handler calls client.memories.create()
-   *   → SDK throws axios-like { response: { status: 429,
-   *       headers: { 'retry-after': '60' }, data: { detail: '...' } } }
-   *   → memory_create.ts catch block: isAxiosLikeError → true,
-   *     status = 429, headers forwarded
-   *   → mapHttpStatusToMcpError(429, body, { 'retry-after': '60' }) →
+   *   → SDK throws RateLimitError(message, retryAfter=60, body)
+   *     (its interceptor parses `Retry-After` into `retryAfter` seconds)
+   *   → memory_create.ts catch block → mapSdkErrorToMcpError
+   *   → instanceof ApiError, retryAfter re-expressed as a header →
+   *     mapHttpStatusToMcpError(429, body, { 'retry-after': '60' }) →
    *     NexusError(RateLimited, httpStatus=429, data.retry_after_seconds=60)
    *   → handler re-throws NexusError directly
-   *
-   * The caller receives a NexusError; isAxiosLikeError(caughtRaw) is false.
    */
 
   beforeEach(() => {
@@ -402,23 +417,13 @@ describe('Cross-substory Case 3: rate limit (429 + Retry-After) through memory_c
     resetCreateClient();
   });
 
-  it('429 with Retry-After:60 → NexusError RateLimited (-32012), httpStatus=429, retry_after_seconds=60', async () => {
-    const axiosLike429 = {
-      isAxiosError: true as const,
-      message: 'Request failed with status code 429',
-      response: {
-        status: 429,
-        data: { detail: 'Rate limit exceeded. Retry after 60 seconds.' },
-        headers: {
-          'retry-after': '60',
-          'content-type': 'application/json',
-        } as Record<string, string>,
-      },
-    };
+  it('RateLimitError(retryAfter=60) → NexusError RateLimited (-32012), httpStatus=429, retry_after_seconds=60', async () => {
+    memoriesCreateSpy.mockRejectedValue(
+      new SdkRateLimitError('Rate limit exceeded. Retry after 60 seconds.', 60, {
+        detail: 'Rate limit exceeded. Retry after 60 seconds.',
+      }),
+    );
 
-    memoriesCreateSpy.mockRejectedValue(axiosLike429);
-
-    // Handler catch block maps + re-throws as NexusError (post-45cc294).
     const caughtRaw = await catchError(() =>
       memoryCreateTool.handler({
         user_id: 'user-ratelimit-test-001',
@@ -427,7 +432,7 @@ describe('Cross-substory Case 3: rate limit (429 + Retry-After) through memory_c
       }),
     );
 
-    // The handler throws NexusError — not the raw axios-like object.
+    // The handler throws NexusError — not the raw SDK error.
     expect(caughtRaw).toBeInstanceOf(NexusError);
 
     const nexusErr = caughtRaw as NexusError;
@@ -435,30 +440,23 @@ describe('Cross-substory Case 3: rate limit (429 + Retry-After) through memory_c
     // errors.ts §M-3: 429 → RateLimited (-32012).
     expect(nexusErr.mcpErrorCode).toBe(McpErrorCode.RateLimited);
     expect(nexusErr.mcpErrorCode).toBe(-32012);
+    expect(nexusErr.code).toBe(-32012);
     expect(nexusErr.httpStatus).toBe(429);
 
     // Clients SHOULD retry after Retry-After window elapses.
     expect(nexusErr.retryable).toBe(true);
 
-    // Retry-After seconds parsed from header and surfaced in data.
+    // Retry-After seconds (parsed by the SDK) surfaced in data.
     expect(nexusErr.data).toBeDefined();
     expect(nexusErr.data!['retry_after_seconds']).toBe(60);
   });
 
-  it('429 without Retry-After header → NexusError RateLimited, retryable=true, retry_after_seconds absent', async () => {
+  it('RateLimitError without retryAfter → NexusError RateLimited, retryable=true, retry_after_seconds absent', async () => {
     // Graceful degradation: 429 without Retry-After still maps to RateLimited;
     // client must apply its own backoff heuristic.
-    const axiosLike429NoHeader = {
-      isAxiosError: true as const,
-      message: 'Request failed with status code 429',
-      response: {
-        status: 429,
-        data: {},
-        headers: {} as Record<string, string>,
-      },
-    };
-
-    memoriesCreateSpy.mockRejectedValue(axiosLike429NoHeader);
+    memoriesCreateSpy.mockRejectedValue(
+      new SdkRateLimitError('Rate limit exceeded', undefined, {}),
+    );
 
     const caughtRaw = await catchError(() =>
       memoryCreateTool.handler({
@@ -482,7 +480,7 @@ describe('Cross-substory Case 3: rate limit (429 + Retry-After) through memory_c
   it('429 NexusError toJSON() excludes cause + stack; includes data.retry_after_seconds', async () => {
     // Security + serialization cross-substory assertion: the NexusError
     // produced by errors.ts must satisfy the toJSON() redaction contract
-    // even when the axios error carries auth metadata in its cause.
+    // even when the SDK error carries auth metadata in its cause.
     const nexusErr = mapHttpStatusToMcpError(429, null, { 'retry-after': '30' });
     const json = nexusErr.toJSON();
 
@@ -495,5 +493,99 @@ describe('Cross-substory Case 3: rate limit (429 + Retry-After) through memory_c
     expect(serialized).not.toContain('CROSS-SUBSTORY-12345');
     expect(serialized).not.toContain('cause');
     expect(serialized).not.toContain('stack');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Case 4 — Upstream interception (@nexusm/sdk 5.2.0 UpstreamInterceptError)
+// ---------------------------------------------------------------------------
+
+describe('Cross-substory Case 4: upstream interception (302 / 2xx-HTML) through the tools + errors.ts', () => {
+  /**
+   * Chain exercised:
+   *   handler calls the SDK
+   *   → SDK throws UpstreamInterceptError (5.2.0: `maxRedirects: 0` turns an
+   *     auth-edge 302 into this; a 2xx whose content-type is not JSON too)
+   *   → catch block → mapSdkErrorToMcpError, matched BEFORE the generic
+   *     ApiError branch (it is an ApiError subclass whose statusCode is the
+   *     edge's, not Nexus's)
+   *   → NexusError(Unauthorized, retryable=false, data.upstream_intercept=true,
+   *     data.http_status, data.redirect_host | data.content_type)
+   *
+   * Before #32 this surfaced as InternalError + data.network=true — "Nexus
+   * is down" — when the actual cause was a local credential / URL.
+   */
+
+  beforeEach(() => {
+    contextRetrieveSpy.mockReset();
+    memoriesSearchSpy.mockReset();
+    __setClientForTesting(null);
+    resetSearchClient();
+  });
+
+  afterEach(() => {
+    __setClientForTesting(null);
+    resetSearchClient();
+  });
+
+  it('302 → login page through context_retrieve: Unauthorized + upstream_intercept + redirect_host', async () => {
+    const sdkErr = new SdkUpstreamInterceptError(
+      sdkRedirectMessage('/context/retrieve', 302, 'login.cross-substory.example'),
+      302,
+      '<html>login</html>',
+    );
+    expect(isAxiosLikeError(sdkErr)).toBe(false);
+    contextRetrieveSpy.mockRejectedValue(sdkErr);
+
+    const caught = await catchError(() =>
+      contextRetrieveTool.handler({ user_id: 'user-intercept-001', query: 'anything' }),
+    );
+
+    expect(caught).toBeInstanceOf(NexusError);
+    const nexusErr = caught as NexusError;
+    expect(nexusErr.mcpErrorCode).toBe(McpErrorCode.Unauthorized);
+    expect(nexusErr.code).toBe(-32011);
+    expect(nexusErr.retryable).toBe(false);
+    expect(nexusErr.data).toEqual({
+      upstream_intercept: true,
+      http_status: 302,
+      redirect_host: 'login.cross-substory.example',
+    });
+    // Not the network branch.
+    expect(nexusErr.data!['network']).toBeUndefined();
+    // Wording: local credential / URL, not a Nexus outage.
+    expect(nexusErr.message).toMatch(/intercepted before it reached Nexus/);
+    expect(nexusErr.message).toMatch(/Cloudflare Access service token/);
+    expect(nexusErr.message).toMatch(/NEXUS_API_URL/);
+    expect(nexusErr.message).toMatch(/not a Nexus outage/);
+    // Nothing from the edge's body, and no token, in the serialised form.
+    const serialized = JSON.stringify(nexusErr.toJSON());
+    expect(serialized).not.toContain('<html>');
+    expect(serialized).not.toContain('CROSS-SUBSTORY-12345');
+  });
+
+  it('200 with an HTML body through memory_search: Unauthorized + upstream_intercept + content_type', async () => {
+    memoriesSearchSpy.mockRejectedValue(
+      new SdkUpstreamInterceptError(
+        sdkNonJsonMessage('/memories/search', 200, 'text/html; charset=utf-8'),
+        200,
+        '<html>captive portal</html>',
+      ),
+    );
+
+    const caught = await catchError(() =>
+      memorySearchTool.handler({ user_id: 'user-intercept-002', query: 'anything' }),
+    );
+
+    expect(caught).toBeInstanceOf(NexusError);
+    const nexusErr = caught as NexusError;
+    expect(nexusErr.mcpErrorCode).toBe(McpErrorCode.Unauthorized);
+    expect(nexusErr.retryable).toBe(false);
+    expect(nexusErr.data).toEqual({
+      upstream_intercept: true,
+      http_status: 200,
+      content_type: 'text/html; charset=utf-8',
+    });
+    expect(nexusErr.data!['redirect_host']).toBeUndefined();
   });
 });

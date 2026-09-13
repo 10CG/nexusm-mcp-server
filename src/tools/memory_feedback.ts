@@ -34,7 +34,7 @@ import type { CallToolResult } from '@modelcontextprotocol/sdk/types.js';
 import { NexusClient, type FeedbackSubmitRequest } from '@nexusm/sdk';
 
 import { loadAuthConfig, resolveUserId, type AuthConfig } from '../auth.js';
-import { McpErrorCode, NexusError, isAxiosLikeError, mapHttpStatusToMcpError } from '../errors.js';
+import { McpErrorCode, NexusError, mapSdkErrorToMcpError } from '../errors.js';
 import type { ToolDefinition } from './types.js';
 
 const NAME = 'nexus.memory_feedback';
@@ -292,19 +292,16 @@ export const memoryFeedbackTool: ToolDefinition = {
       }),
     );
     // Wave 2B mid_audit-to-pre_merge fix: wrap SDK call + map errors per §M-3
-    // (mirrors context.ts pattern). Without this, axios-like 401/403/429
-    // surface as JSON-RPC InternalError instead of Unauthorized/RateLimited.
+    // so 401/403/429 surface as Unauthorized/RateLimited, not InternalError.
+    // nexusm-mcp-server#32: the catch used to recognise only axios-shaped
+    // errors, which `@nexusm/sdk` never throws. All SDK errors now go through
+    // the single bridge in errors.ts.
     let result;
     try {
       result = await client.feedback.submit(parsed.retrieve_id, parsed.body);
     } catch (err: unknown) {
-      if (isAxiosLikeError(err)) {
-        const status = err.response?.status ?? null;
-        const respBody = err.response?.data ?? null;
-        const headers = err.response?.headers as Record<string, string | string[]> | undefined;
-        throw mapHttpStatusToMcpError(status, respBody, headers);
-      }
-      throw mapHttpStatusToMcpError(null, null);
+      if (err instanceof NexusError) throw err;
+      throw mapSdkErrorToMcpError(err, NAME);
     }
 
     return {

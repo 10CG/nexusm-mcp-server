@@ -29,13 +29,16 @@ import { McpErrorCode, NexusError } from '../../../src/errors.js';
 // ---------------------------------------------------------------------------
 const createMock = vi.fn();
 
-vi.mock('@nexusm/sdk', () => {
+vi.mock('@nexusm/sdk', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@nexusm/sdk')>();
   class NexusClient {
     public readonly memories = { create: createMock };
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     constructor(_config: any) {}
   }
-  return { NexusClient };
+  // Spread the real module so the SDK error classes stay real — the bridge in
+  // errors.ts matches them with `instanceof` (nexusm-mcp-server#32).
+  return { ...actual, NexusClient };
 });
 
 vi.mock('../../../src/auth.js', async (importOriginal) => {
@@ -390,5 +393,88 @@ describe('memory_create — NEXUS_DEFAULT_USER_ID server-side pin', () => {
 
     const body = createMock.mock.calls[0]?.[0] as { user_id?: string };
     expect(body.user_id).toBe('pinned-user');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// SDK error mapping (nexusm-mcp-server#32) — real @nexusm/sdk error classes.
+// memory_create had no SDK-error test at all before this; the catch block
+// only recognised axios-shaped errors, which the SDK never throws.
+// ---------------------------------------------------------------------------
+
+const {
+  ApiError: SdkApiError,
+  NetworkError: SdkNetworkError,
+  RateLimitError: SdkRateLimitError,
+  UpstreamInterceptError: SdkUpstreamInterceptError,
+} = await import('@nexusm/sdk');
+
+describe('memory_create — SDK error mapping (real SDK classes)', () => {
+  async function createAndCatch(): Promise<NexusError> {
+    try {
+      await memoryCreateTool.handler({
+        user_id: 'u1',
+        content: 'error-path memory',
+        memory_type: 'semantic',
+      });
+    } catch (err) {
+      expect(err).toBeInstanceOf(NexusError);
+      return err as NexusError;
+    }
+    throw new Error('handler resolved; expected it to throw');
+  }
+
+  it('RateLimitError(retryAfter=60) → RateLimited (-32012) + data.retry_after_seconds=60', async () => {
+    createMock.mockRejectedValueOnce(
+      new SdkRateLimitError('Rate limit exceeded. Retry after 60 seconds.', 60, {}),
+    );
+
+    const err = await createAndCatch();
+    expect(err.mcpErrorCode).toBe(McpErrorCode.RateLimited);
+    expect(err.code).toBe(-32012);
+    expect(err.httpStatus).toBe(429);
+    expect(err.retryable).toBe(true);
+    expect(err.data).toEqual({ retry_after_seconds: 60 });
+  });
+
+  it('UpstreamInterceptError (2xx HTML) → Unauthorized + data.upstream_intercept + content_type', async () => {
+    createMock.mockRejectedValueOnce(
+      new SdkUpstreamInterceptError(
+        'Request to /memories returned HTTP 200 with content-type "text/html" where JSON ' +
+          'was expected. Something between this client and Nexus answered the request ' +
+          '(auth edge, proxy, or captive portal); treating it as data would look like an ' +
+          'empty result.',
+        200,
+        '<html>portal</html>',
+      ),
+    );
+
+    const err = await createAndCatch();
+    expect(err.mcpErrorCode).toBe(McpErrorCode.Unauthorized);
+    expect(err.retryable).toBe(false);
+    expect(err.data).toEqual({
+      upstream_intercept: true,
+      http_status: 200,
+      content_type: 'text/html',
+    });
+  });
+
+  it('ApiError 503 → ConnectionClosed, retryable=true', async () => {
+    createMock.mockRejectedValueOnce(new SdkApiError('Service Unavailable', 503, {}));
+
+    const err = await createAndCatch();
+    expect(err.mcpErrorCode).toBe(McpErrorCode.ConnectionClosed);
+    expect(err.httpStatus).toBe(503);
+    expect(err.retryable).toBe(true);
+  });
+
+  it('NetworkError → InternalError + data.network', async () => {
+    createMock.mockRejectedValueOnce(new SdkNetworkError('connect ECONNREFUSED 127.0.0.1:8001'));
+
+    const err = await createAndCatch();
+    expect(err.mcpErrorCode).toBe(McpErrorCode.InternalError);
+    expect(err.httpStatus).toBeNull();
+    expect(err.data).toEqual({ network: true });
+    expect(err.message).toMatch(/ECONNREFUSED/);
   });
 });

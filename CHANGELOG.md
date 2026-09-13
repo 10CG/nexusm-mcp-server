@@ -11,6 +11,67 @@ Versions follow [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- **The §M-3 HTTP→MCP error mapping never ran in production — every SDK
+  failure surfaced as `InternalError`** (issue #32, the wider hole behind it).
+  All four tool handlers gated the mapping behind `isAxiosLikeError(err)`, but
+  `@nexusm/sdk` has wrapped every axios failure into its own typed classes
+  (`ApiError` and subclasses, `TimeoutError`, `NetworkError`) since its v1.0.0
+  rewrite — before this server ever pinned it (1.3.0). None of those carries
+  `isAxiosError`, so a real 401 / 403 / 404 / 422 / 429 / 5xx fell through to
+  the generic branch: `Unauthorized (-32011)`, `RateLimited (-32012)`,
+  `retry_after_seconds` and `retryable` were unreachable, and a client could
+  only ever see `-32603`. This is "never worked", not a regression. The unit
+  and cross-substory tests were green because they rejected with
+  `{ isAxiosError: true, ... }` fakes the SDK never throws.
+
+  A second, independent link was dead on the wire: `@modelcontextprotocol/sdk`
+  serialises a thrown handler error as
+  `{ code: Number.isSafeInteger(err.code) ? err.code : -32603, message, data }`
+  and `NexusError` had no `code` property — so even an error that *was* mapped
+  correctly reached the client as `-32603`. `NexusError.code` now aliases
+  `mcpErrorCode`; `toJSON()` is unchanged.
+
+  Fix: one bridge, `mapSdkErrorToMcpError(err, toolName)` in `src/errors.ts`,
+  used by every tool's catch block. It matches the SDK classes by `instanceof`
+  (compile-time lock against a renamed class) with the SDK's documented `code`
+  string as the fallback criterion, then feeds `mapHttpStatusToMcpError`. The
+  old `isAxiosLikeError` path is kept only as a fallback for a raw axios error.
+
+  - `UpstreamInterceptError` (SDK 5.2.0: auth edge / proxy answered instead of
+    Nexus — a 3xx, or a 2xx whose body is not JSON) → `Unauthorized (-32011)`,
+    `retryable=false`, `data.upstream_intercept=true`, `data.http_status`, and
+    `data.redirect_host` / `data.content_type` lifted from the SDK message
+    when present. The message says the request never reached Nexus and points
+    at the local credential (e.g. an expired Cloudflare Access service token)
+    or `NEXUS_API_URL` — it no longer looks like a Nexus outage. Distinguish it
+    from a real 401 by `data.upstream_intercept`. No header, token or edge
+    body is ever serialised.
+  - `TimeoutError` → `RequestTimeout (-32001)`, `data.timeout=true`;
+    `NetworkError` → `InternalError`, `data.network=true`. Both keep the SDK's
+    own detail (`connect ECONNREFUSED 127.0.0.1:8001`) in the message.
+  - `ApiError` family → the §M-3 table by `statusCode`;
+    `RateLimitError.retryAfter` → `data.retry_after_seconds`.
+  - `InputValidationError` (client-side zod) → `InvalidParams`.
+  - Anything else → `InternalError`, `retryable=false`, message kept. It is
+    deliberately **not** labelled `network=true` any more (three of the four
+    handlers used to do that): "retry, Nexus is down" for an unknown failure
+    is the same misdiagnosis #32 is about.
+
+  Tests now construct the real `@nexusm/sdk` error classes (the `vi.mock`
+  factories spread the original module so only `NexusClient` is faked), and a
+  new loopback integration test (`tests/integration/sdk_error_bridge_loopback.test.ts`)
+  drives the real SDK interceptor against a local HTTP server — 302, 200+HTML,
+  401, 404, 429+Retry-After, 500, timeout, connection refused — through the
+  tool handlers, plus one stdio round-trip asserting the JSON-RPC `error.code`
+  a client actually receives.
+
+### Changed
+
+- `@nexusm/sdk` dependency raised to `^5.2.0` (lock: 5.0.0 → 5.2.0). `npx`
+  users already resolved 5.2.0 through the old `^5.0.0` range, so the
+  `UpstreamInterceptError` behaviour above was live on the user-facing surface
+  before this server knew the class existed.
+
 - **Unit tests no longer inherit the host machine's `NEXUS_*` environment**
   (issue #34). On a dev machine that has the nexus MCP plugin configured, the
   shell exports `NEXUS_API_URL` / `NEXUS_API_TOKEN` / `NEXUS_TENANT_ID` /
